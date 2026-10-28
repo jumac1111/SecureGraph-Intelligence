@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+
+    <meta charset="UTF-8">
+
+    <title>
+        Continuous Assurance Dashboard
+    </title>
+
+    <style>
+
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            background: #f4f6f8;
+        }
+
+        header {
+            background: #111827;
+            color: white;
+            padding: 18px 30px;
+        }
+
+        main {
+            padding: 30px;
+            max-width: 900px;
+            margin: auto;
+        }
+
+        .card {
+            background: white;
+            padding: 25px;
+            margin-bottom: 20px;
+            border-radius: 10px;
+            box-shadow: 0 3px 15px rgba(0,0,0,0.08);
+        }
+
+        .status {
+            font-size: 20px;
+            font-weight: bold;
+            color: #15803d;
+        }
+
+        textarea {
+            width: 100%;
+            height: 150px;
+            padding: 10px;
+            box-sizing: border-box;
+        }
+
+    </style>
+
+</head>
+
+<body>
+
+<header>
+
+    <h2>
+        Continuous Assurance Protected Application
+    </h2>
+
+</header>
+
+<main>
+
+    <div class="card">
+
+        <h3>Session Status</h3>
+
+        <div id="sessionStatus"
+             class="status">
+
+            Checking session...
+
+        </div>
+
+    </div>
+
+    <div class="card">
+
+        <h3>Protected Workspace</h3>
+
+        <p>
+            This area represents functionality that
+            would normally exist inside a protected
+            web application.
+        </p>
+
+        <textarea
+            id="workspace"
+            placeholder="Interact with the application here..."
+        ></textarea>
+
+    </div>
+
+    <div class="card">
+
+        <h3>Behavior Observation</h3>
+
+        <p>
+            The prototype will collect numerical
+            behavioral features rather than raw
+            keystrokes.
+        </p>
+
+        <div id="observationStatus">
+            Observation system starting...
+        </div>
+
+    </div>
+
+</main>
+
+<script src="/static/observer.js"></script>
+
+</body>
+
+</html>

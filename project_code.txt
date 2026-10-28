@@ -1,0 +1,7025 @@
+﻿===== FILE: app\config.py =====
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class AssuranceConfig:
+    """
+    Configuration for assurance signal fusion.
+
+    The weights must sum to 1.0.
+    """
+
+    behavior_weight: float = 0.60
+    face_weight: float = 0.25
+    context_weight: float = 0.15
+
+    def __post_init__(self) -> None:
+        total = (
+            self.behavior_weight
+            + self.face_weight
+            + self.context_weight
+        )
+
+        if abs(total - 1.0) > 1e-9:
+            raise ValueError(
+                "Assurance signal weights must sum to 1.0."
+            )
+
+        for name, value in (
+            ("behavior_weight", self.behavior_weight),
+            ("face_weight", self.face_weight),
+            ("context_weight", self.context_weight),
+        ):
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(
+                    f"{name} must be between 0.0 and 1.0."
+                )
+
+
+@dataclass(frozen=True)
+class BehavioralConfig:
+    """
+    Configuration for the Behavioral Signals Engine.
+
+    The behavioral engine deliberately uses conservative
+    bounds and robust statistical controls.
+    """
+
+    required_observations: int = 50
+
+    minimum_feature_observations: int = 5
+
+    minimum_observation_quality: float = 0.20
+
+    maximum_features_missing_ratio: float = 0.60
+
+    maximum_update_z_score: float = 4.0
+
+    maximum_temporal_gap_seconds: float = 300.0
+
+    temporal_decay_seconds: float = 60.0
+
+    consistency_threshold: float = 0.75
+
+    uncertainty_threshold: float = 0.45
+
+    def __post_init__(self) -> None:
+        if self.required_observations < 1:
+            raise ValueError(
+                "required_observations must be at least 1."
+            )
+
+        if self.minimum_feature_observations < 1:
+            raise ValueError(
+                "minimum_feature_observations must be at least 1."
+            )
+
+        if not 0.0 <= self.minimum_observation_quality <= 1.0:
+            raise ValueError(
+                "minimum_observation_quality must be "
+                "between 0.0 and 1.0."
+            )
+
+        if not 0.0 <= self.maximum_features_missing_ratio <= 1.0:
+            raise ValueError(
+                "maximum_features_missing_ratio must be "
+                "between 0.0 and 1.0."
+            )
+
+        if self.maximum_update_z_score <= 0.0:
+            raise ValueError(
+                "maximum_update_z_score must be greater than 0."
+            )
+
+        if self.maximum_temporal_gap_seconds <= 0.0:
+            raise ValueError(
+                "maximum_temporal_gap_seconds must be "
+                "greater than 0."
+            )
+
+        if self.temporal_decay_seconds <= 0.0:
+            raise ValueError(
+                "temporal_decay_seconds must be greater than 0."
+            )
+
+        if not 0.0 <= self.uncertainty_threshold <= 1.0:
+            raise ValueError(
+                "uncertainty_threshold must be "
+                "between 0.0 and 1.0."
+            )
+
+        if not 0.0 <= self.consistency_threshold <= 1.0:
+            raise ValueError(
+                "consistency_threshold must be "
+                "between 0.0 and 1.0."
+            )
+
+        if (
+            self.uncertainty_threshold
+            >= self.consistency_threshold
+        ):
+            raise ValueError(
+                "uncertainty_threshold must be lower "
+                "than consistency_threshold."
+            )
+
+
+@dataclass(frozen=True)
+class PolicyConfig:
+    """
+    Centralized policy thresholds.
+
+    The policy has three possible outcomes:
+
+        assurance >= allow_threshold
+            -> allow
+
+        assurance >= reverify_threshold
+            -> reverify
+
+        assurance < reverify_threshold
+            -> lock
+    """
+
+    allow_threshold: float = 0.75
+    reverify_threshold: float = 0.45
+
+    max_reverify_attempts: int = 3
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.reverify_threshold <= 1.0:
+            raise ValueError(
+                "reverify_threshold must be between 0.0 and 1.0."
+            )
+
+        if not 0.0 <= self.allow_threshold <= 1.0:
+            raise ValueError(
+                "allow_threshold must be between 0.0 and 1.0."
+            )
+
+        if self.reverify_threshold >= self.allow_threshold:
+            raise ValueError(
+                "reverify_threshold must be lower "
+                "than allow_threshold."
+            )
+
+        if self.max_reverify_attempts < 1:
+            raise ValueError(
+                "max_reverify_attempts must be at least 1."
+            )
+
+
+@dataclass(frozen=True)
+class SessionConfig:
+    """
+    Session lifecycle and cookie configuration.
+    """
+
+    cookie_name: str = "session_id"
+
+    session_cookie_path: str = "/"
+
+    session_cookie_http_only: bool = True
+
+    session_cookie_secure: bool = False
+
+    session_cookie_same_site: str = "lax"
+
+    inactivity_timeout_seconds: int = 1800
+
+    def __post_init__(self) -> None:
+        if self.inactivity_timeout_seconds < 0:
+            raise ValueError(
+                "inactivity_timeout_seconds must be "
+                "greater than or equal to 0."
+            )
+
+
+@dataclass(frozen=True)
+class LearningConfig:
+    """
+    Backwards-compatible behavioral learning configuration.
+    """
+
+    required_observations: int = 50
+
+
+@dataclass(frozen=True)
+class AuditConfig:
+    """
+    Audit logging configuration.
+    """
+
+    enabled: bool = True
+
+    max_events: int = 10_000
+
+
+@dataclass(frozen=True)
+class AppConfig:
+    """
+    Root application configuration.
+    """
+
+    assurance: AssuranceConfig = AssuranceConfig()
+
+    behavioral: BehavioralConfig = BehavioralConfig()
+
+    policy: PolicyConfig = PolicyConfig()
+
+    session: SessionConfig = SessionConfig()
+
+    learning: LearningConfig = LearningConfig()
+
+    audit: AuditConfig = AuditConfig()
+
+
+config = AppConfig()
+
+===== FILE: app\main.py =====
+from pathlib import Path
+import secrets
+
+from fastapi import (
+    Cookie,
+    FastAPI,
+    HTTPException,
+)
+
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+)
+
+from fastapi.staticfiles import (
+    StaticFiles,
+)
+
+from pydantic import BaseModel
+
+from app.audit.logger import (
+    AuditLogger,
+)
+
+from app.config import (
+    config,
+)
+
+from app.engine.behavior_learning import (
+    BehavioralLearningEngine,
+)
+
+from app.engine.engine import (
+    ContinuousAssuranceEngine,
+)
+
+from app.engine.policy import (
+    PolicyEngine,
+)
+
+from app.models.audit import (
+    AuditEvent,
+    AuditEventType,
+)
+
+from app.models.profile import (
+    UserProfile,
+)
+
+from app.models.signals import (
+    BehaviorObservation,
+)
+
+from app.storage.session_store import (
+    SessionStore,
+)
+
+
+# ==========================================================
+# APPLICATION
+# ==========================================================
+
+BASE_DIR = Path(__file__).resolve().parent
+
+app = FastAPI(
+    title="Continuous Assurance",
+    version="0.9.0",
+)
+
+
+# ==========================================================
+# STATIC FILES
+# ==========================================================
+
+app.mount(
+    "/static",
+    StaticFiles(
+        directory=(
+            BASE_DIR
+            / "web"
+            / "static"
+        ),
+    ),
+    name="static",
+)
+
+
+# ==========================================================
+# DEMO AUTHENTICATION
+# ==========================================================
+
+DEMO_USERNAME = "researcher"
+
+DEMO_PASSWORD = "research123"
+
+
+# ==========================================================
+# AUDIT
+# ==========================================================
+
+audit_logger = AuditLogger(
+    config.audit
+)
+
+
+# ==========================================================
+# STORAGE
+# ==========================================================
+
+session_store = SessionStore(
+    audit_logger=audit_logger,
+    config=config.session,
+)
+
+
+# ==========================================================
+# LEARNING
+# ==========================================================
+
+learning_engine = (
+    BehavioralLearningEngine(
+        required_observations=(
+            config.learning.required_observations
+        )
+    )
+)
+
+
+# ==========================================================
+# POLICY
+# ==========================================================
+
+policy_engine = PolicyEngine(
+    config.policy
+)
+
+
+# ==========================================================
+# ASSURANCE
+# ==========================================================
+
+assurance_engine = (
+    ContinuousAssuranceEngine(
+        assurance_config=(
+            config.assurance
+        ),
+        policy_engine=policy_engine,
+    )
+)
+
+
+# ==========================================================
+# USER PROFILES
+# ==========================================================
+
+profiles: dict[
+    str,
+    UserProfile,
+] = {}
+
+
+# ==========================================================
+# REQUEST MODELS
+# ==========================================================
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class ReverificationRequest(BaseModel):
+    verified: bool
+
+
+# ==========================================================
+# AUDIT HELPER
+# ==========================================================
+
+def audit(
+    event_type: AuditEventType,
+    *,
+    user_id: str | None = None,
+    session_id: str | None = None,
+    action: str | None = None,
+    reason: str | None = None,
+    assurance_score: float | None = None,
+    risk_score: float | None = None,
+    metadata: dict | None = None,
+) -> None:
+    audit_logger.record(
+        AuditEvent(
+            event_type=event_type,
+            user_id=user_id,
+            session_id=session_id,
+            action=action,
+            reason=reason,
+            assurance_score=assurance_score,
+            risk_score=risk_score,
+            metadata=metadata or {},
+        )
+    )
+
+
+# ==========================================================
+# SESSION HELPERS
+# ==========================================================
+
+def get_session(
+    session_id: str | None,
+):
+    """
+    Resolve an authenticated session.
+
+    This helper only resolves the session object.
+    Lifecycle validation is handled separately by
+    ensure_valid_session().
+    """
+
+    if session_id is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required.",
+        )
+
+    session = session_store.get(
+        session_id
+    )
+
+    if session is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid session.",
+        )
+
+    return session
+
+
+def ensure_valid_session(
+    session_id: str | None,
+):
+    """
+    Resolve and validate an authenticated session.
+
+    SessionStore owns inactivity expiration and lifecycle
+    transitions.
+
+    Locked sessions are rejected here because this helper is
+    used by protected operations that require an active
+    session.
+    """
+
+    session = get_session(
+        session_id
+    )
+
+    session_store.ensure_valid(
+        session
+    )
+
+    if session.is_locked:
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "Session is locked. "
+                + (
+                    session.lock_reason
+                    or
+                    "Authentication is required."
+                )
+            ),
+        )
+
+    return session
+
+
+# ==========================================================
+# PAGES
+# ==========================================================
+
+@app.get("/")
+def login_page():
+    return FileResponse(
+        BASE_DIR
+        / "web"
+        / "login.html"
+    )
+
+
+@app.get("/dashboard")
+def dashboard():
+    return FileResponse(
+        BASE_DIR
+        / "web"
+        / "dashboard.html"
+    )
+
+
+# ==========================================================
+# LOGIN
+# ==========================================================
+
+@app.post("/api/login")
+def login(
+    request: LoginRequest,
+):
+    if (
+        request.username
+        != DEMO_USERNAME
+        or request.password
+        != DEMO_PASSWORD
+    ):
+        audit(
+            AuditEventType.LOGIN_FAILURE,
+            metadata={
+                "username": request.username,
+            },
+        )
+
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid username or password.",
+        )
+
+    if request.username not in profiles:
+        profiles[
+            request.username
+        ] = UserProfile(
+            user_id=request.username
+        )
+
+    profile = profiles[
+        request.username
+    ]
+
+    session_id = (
+        secrets.token_urlsafe(32)
+    )
+
+    session_store.create(
+        session_id=session_id,
+        user_id=request.username,
+    )
+
+    audit(
+        AuditEventType.LOGIN_SUCCESS,
+        user_id=request.username,
+        session_id=session_id,
+    )
+
+    cookie = (
+        f"{config.session.cookie_name}="
+        f"{session_id}; "
+        f"Path={config.session.session_cookie_path}; "
+    )
+
+    if config.session.session_cookie_http_only:
+        cookie += "HttpOnly; "
+
+    cookie += (
+        f"SameSite="
+        f"{config.session.session_cookie_same_site}"
+    )
+
+    if config.session.session_cookie_secure:
+        cookie += "; Secure"
+
+    return JSONResponse(
+        content={
+            "authenticated": True,
+            "user_id": request.username,
+            "profile_state": profile.state,
+            "session_status": "active",
+        },
+        headers={
+            "Set-Cookie": cookie,
+        },
+    )
+
+
+# ==========================================================
+# LOGOUT
+# ==========================================================
+
+@app.post("/api/logout")
+def logout(
+    session_id: str | None = Cookie(
+        default=None,
+        alias=config.session.cookie_name,
+    ),
+):
+    """
+    Explicitly terminate the current authenticated session.
+
+    Logout is terminal for the current session. The server-side
+    session is locked and the client session cookie is cleared.
+    """
+
+    session = get_session(
+        session_id
+    )
+
+    session_store.ensure_valid(
+        session
+    )
+
+    if session.is_locked:
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "Session is locked. "
+                + (
+                    session.lock_reason
+                    or
+                    "Authentication is required."
+                )
+            ),
+        )
+
+    session_store.logout(
+        session
+    )
+
+    response = JSONResponse(
+        content={
+            "authenticated": False,
+            "logged_out": True,
+            "session_status": "logged_out",
+            "message": (
+                "Session logged out successfully."
+            ),
+        }
+    )
+
+    response.delete_cookie(
+        key=config.session.cookie_name,
+        path=config.session.session_cookie_path,
+    )
+
+    return response
+
+
+# ==========================================================
+# SESSION STATUS
+# ==========================================================
+
+@app.get("/api/session/status")
+def session_status(
+    session_id: str | None = Cookie(
+        default=None,
+        alias=config.session.cookie_name,
+    ),
+):
+    """
+    Return the current session state.
+
+    Unlike protected operations, this endpoint deliberately
+    allows a locked session to be inspected so the client can
+    understand why the session is no longer active.
+    """
+
+    session = get_session(
+        session_id
+    )
+
+    session_store.ensure_valid(
+        session
+    )
+
+    return {
+        "authenticated": (
+            session.active
+        ),
+        "active": (
+            session.active
+        ),
+        "user_id": (
+            session.user_id
+        ),
+        "state": (
+            session.state.value
+        ),
+        "behavior_score": (
+            session.behavior_score
+        ),
+        "assurance_score": (
+            session.assurance_score
+        ),
+        "risk_score": (
+            session.risk_score
+        ),
+        "reverify_count": (
+            session.reverify_count
+        ),
+        "lock_reason": (
+            session.lock_reason
+        ),
+        "created_at": (
+            session.created_at
+        ),
+        "last_activity_at": (
+            session.last_activity_at
+        ),
+        "state_changed_at": (
+            session.state_changed_at
+        ),
+    }
+
+
+# ==========================================================
+# REVERIFICATION
+# ==========================================================
+
+@app.post("/api/session/reverify")
+def reverify_session(
+    request: ReverificationRequest,
+    session_id: str | None = Cookie(
+        default=None,
+        alias=config.session.cookie_name,
+    ),
+):
+    # ======================================================
+    # 1. SESSION + EXPIRATION
+    # ======================================================
+
+    session = ensure_valid_session(
+        session_id
+    )
+
+    # ======================================================
+    # 2. NOT CURRENTLY REVERIFYING
+    # ======================================================
+
+    if not session.requires_reverification:
+        return {
+            "verified": True,
+            "session_state": (
+                session.state.value
+            ),
+            "message": (
+                "Session does not currently "
+                "require reverification."
+            ),
+        }
+
+    # ======================================================
+    # 3. FAILED VERIFICATION
+    # ======================================================
+
+    if not request.verified:
+        should_lock = (
+            policy_engine
+            .should_lock_after_failed_reverification(
+                session.reverify_count
+            )
+        )
+
+        if should_lock:
+            reason = (
+                "Maximum reverification attempts "
+                "exceeded."
+            )
+
+            session_store.lock(
+                session,
+                reason=reason,
+            )
+
+            return {
+                "verified": False,
+                "session_state": (
+                    session.state.value
+                ),
+                "session_active": False,
+                "reverify_count": (
+                    session.reverify_count
+                ),
+                "action": "lock",
+                "message": (
+                    "Reverification failed too many "
+                    "times. Session has been locked."
+                ),
+            }
+
+        session_store.mark_reverify(
+            session,
+            reason=(
+                "Identity verification failed."
+            ),
+        )
+
+        audit(
+            AuditEventType.REVERIFICATION_FAILURE,
+            user_id=session.user_id,
+            session_id=session.session_id,
+            action="reverify",
+            reason=(
+                "Identity verification failed."
+            ),
+        )
+
+        return {
+            "verified": False,
+            "session_state": (
+                session.state.value
+            ),
+            "session_active": (
+                session.active
+            ),
+            "reverify_count": (
+                session.reverify_count
+            ),
+            "action": "reverify",
+            "message": (
+                "Identity verification failed. "
+                "Reverification is still required."
+            ),
+        }
+
+    # ======================================================
+    # 4. SUCCESSFUL VERIFICATION
+    # ======================================================
+
+    session_store.activate(
+        session,
+        reason=(
+            "Identity verification successful."
+        ),
+    )
+
+    audit(
+        AuditEventType.REVERIFICATION_SUCCESS,
+        user_id=session.user_id,
+        session_id=session.session_id,
+        action="allow",
+        reason=(
+            "Identity verification successful."
+        ),
+    )
+
+    return {
+        "verified": True,
+        "session_state": (
+            session.state.value
+        ),
+        "session_active": (
+            session.active
+        ),
+        "reverify_count": (
+            session.reverify_count
+        ),
+        "message": (
+            "Identity verification "
+            "successful. Session restored."
+        ),
+    }
+
+
+# ==========================================================
+# PROTECTED RESOURCE
+# ==========================================================
+
+@app.get("/api/protected/resource")
+def protected_resource(
+    session_id: str | None = Cookie(
+        default=None,
+        alias=config.session.cookie_name,
+    ),
+):
+    # ======================================================
+    # 1. SESSION + EXPIRATION
+    # ======================================================
+
+    session = ensure_valid_session(
+        session_id
+    )
+
+    # ======================================================
+    # 2. REVERIFICATION
+    # ======================================================
+
+    if session.requires_reverification:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Identity verification required "
+                "before accessing this resource."
+            ),
+        )
+
+    # ======================================================
+    # 3. ACTIVITY
+    # ======================================================
+
+    session_store.touch(
+        session
+    )
+
+    # ======================================================
+    # 4. AUDIT
+    # ======================================================
+
+    audit(
+        AuditEventType.PROTECTED_RESOURCE_ACCESS,
+        user_id=session.user_id,
+        session_id=session.session_id,
+        action="allow",
+    )
+
+    return {
+        "authorized": True,
+        "resource": "protected",
+        "message": (
+            "Protected resource accessed "
+            "successfully."
+        ),
+        "user_id": session.user_id,
+        "session_state": (
+            session.state.value
+        ),
+    }
+
+
+# ==========================================================
+# BEHAVIOR OBSERVATION
+# ==========================================================
+
+@app.post("/api/behavior/observation")
+def behavior_observation(
+    observation: BehaviorObservation,
+    session_id: str | None = Cookie(
+        default=None,
+        alias=config.session.cookie_name,
+    ),
+):
+    # ======================================================
+    # 1. SESSION + EXPIRATION
+    # ======================================================
+
+    session = ensure_valid_session(
+        session_id
+    )
+
+    # ======================================================
+    # 2. REVERIFICATION
+    # ======================================================
+
+    if session.requires_reverification:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Identity verification required "
+                "before submitting behavior."
+            ),
+        )
+
+    # ======================================================
+    # 3. ACTIVITY
+    # ======================================================
+
+    session_store.touch(
+        session
+    )
+
+    # ======================================================
+    # 4. PROFILE
+    # ======================================================
+
+    user_id = session.user_id
+
+    if user_id not in profiles:
+        profiles[user_id] = UserProfile(
+            user_id=user_id
+        )
+
+    profile = profiles[
+        user_id
+    ]
+
+    # ======================================================
+    # 5. AUDIT OBSERVATION
+    # ======================================================
+
+    audit(
+        AuditEventType.BEHAVIOR_OBSERVATION,
+        user_id=user_id,
+        session_id=session.session_id,
+        metadata={
+            "profile_state": str(
+                profile.state
+            ),
+        },
+    )
+
+    # ======================================================
+    # 6. LEARNING
+    # ======================================================
+
+    if profile.state != "established":
+        profile = (
+            learning_engine.update_profile(
+                profile,
+                observation,
+            )
+        )
+
+        profiles[user_id] = profile
+
+        progress = (
+            profile.observation_count
+            /
+            profile.required_observations
+        )
+
+        progress = min(
+            progress,
+            1.0,
+        )
+
+        return {
+            "mode": "learning",
+            "profile_state": (
+                profile.state
+            ),
+            "observation_count": (
+                profile.observation_count
+            ),
+            "required_observations": (
+                profile.required_observations
+            ),
+            "progress": progress,
+            "behavior_score": None,
+            "assurance_score": None,
+            "risk_score": None,
+            "action": "learning",
+            "session_state": (
+                session.state.value
+            ),
+            "session_active": (
+                session.active
+            ),
+            "reason": (
+                "Behavioral profile is still "
+                "being established."
+            ),
+        }
+
+    # ======================================================
+    # 7. ASSURANCE + POLICY
+    # ======================================================
+
+    decision = (
+        assurance_engine.evaluate(
+            profile,
+            observation,
+        )
+    )
+
+    # ======================================================
+    # 8. STORE SCORES
+    # ======================================================
+
+    session.behavior_score = (
+        decision.behavior_score
+    )
+
+    session.assurance_score = (
+        decision.assurance_score
+    )
+
+    session.risk_score = (
+        decision.risk_score
+    )
+
+    # ======================================================
+    # 9. AUDIT ASSURANCE
+    # ======================================================
+
+    audit(
+        AuditEventType.ASSURANCE_EVALUATED,
+        user_id=user_id,
+        session_id=session.session_id,
+        action=decision.action.value,
+        reason=decision.reason,
+        assurance_score=(
+            decision.assurance_score
+        ),
+        risk_score=(
+            decision.risk_score
+        ),
+    )
+
+    # ======================================================
+    # 10. APPLY POLICY
+    # ======================================================
+
+    session_store.apply_action(
+        session,
+        decision.action,
+        decision.reason,
+    )
+
+    # ======================================================
+    # 11. RESPONSE
+    # ======================================================
+
+    return {
+        "mode": "verification",
+        "profile_state": (
+            profile.state
+        ),
+        "observation_count": (
+            profile.observation_count
+        ),
+        "behavior_score": (
+            decision.behavior_score
+        ),
+        "face_score": (
+            decision.face_score
+        ),
+        "context_score": (
+            decision.context_score
+        ),
+        "assurance_score": (
+            decision.assurance_score
+        ),
+        "risk_score": (
+            decision.risk_score
+        ),
+        "action": (
+            decision.action.value
+        ),
+        "session_state": (
+            session.state.value
+        ),
+        "session_active": (
+            session.active
+        ),
+        "reverify_count": (
+            session.reverify_count
+        ),
+        "reason": (
+            decision.reason
+        ),
+    }
+
+===== FILE: app\__init__.py =====
+
+===== FILE: app\api\routes.py =====
+from fastapi import APIRouter
+
+from app.engine.engine import ContinuousAssuranceEngine
+from app.models.decision import AssessmentDecision
+from app.models.session import SessionContext
+from app.models.signals import SignalResult
+
+
+router = APIRouter()
+
+engine = ContinuousAssuranceEngine()
+
+
+@router.post(
+    "/assess",
+    response_model=AssessmentDecision,
+)
+def assess_session(
+    session: SessionContext,
+    signals: list[SignalResult],
+):
+
+    return engine.assess(
+        session=session,
+        signals=signals,
+    )
+
+===== FILE: app\api\__init__.py =====
+
+===== FILE: app\audit\logger.py =====
+from threading import Lock
+
+from app.config import AuditConfig
+
+from app.models.audit import (
+    AuditEvent,
+)
+
+
+class AuditLogger:
+    """
+    Small in-memory audit logger.
+
+    The interface deliberately does not depend on storage.
+
+    A future implementation can persist events to:
+    - SQLite
+    - PostgreSQL
+    - an external SIEM
+    - an append-only event store
+    """
+
+    def __init__(
+        self,
+        config: AuditConfig | None = None,
+    ) -> None:
+
+        self.config = config or AuditConfig()
+
+        self._events: list[AuditEvent] = []
+
+        self._lock = Lock()
+
+    def record(
+        self,
+        event: AuditEvent,
+    ) -> None:
+
+        if not self.config.enabled:
+            return
+
+        with self._lock:
+
+            self._events.append(
+                event
+            )
+
+            overflow = (
+                len(self._events)
+                - self.config.max_events
+            )
+
+            if overflow > 0:
+
+                del self._events[
+                    :overflow
+                ]
+
+    def list_events(self) -> list[AuditEvent]:
+
+        with self._lock:
+
+            return list(
+                self._events
+            )
+
+    def clear(self) -> None:
+
+        with self._lock:
+
+            self._events.clear()
+
+    def count(self) -> int:
+
+        with self._lock:
+
+            return len(
+                self._events
+            )
+
+===== FILE: app\audit\__init__.py =====
+from app.audit.logger import AuditLogger
+
+__all__ = [
+    "AuditLogger",
+]
+
+===== FILE: app\engine\behavioral_signals.py =====
+from __future__ import annotations
+
+import math
+from typing import Mapping
+
+from app.models.signals import (
+    BehaviorObservation,
+    SignalResult,
+    SignalStatus,
+)
+
+
+class BehavioralSignalsEngine:
+    """
+    Converts privacy-conscious behavioral measurements into
+    normalized behavioral assurance signals.
+
+    This layer deliberately does NOT process or store:
+
+    - raw keystrokes
+    - passwords
+    - page contents
+    - mouse coordinates
+    - screenshots
+
+    It operates only on numerical behavioral measurements.
+
+    Supported measurements:
+
+    - typing_speed
+    - typing_interval_variance
+    - mouse_speed
+    - click_interval
+    - navigation_interval
+    """
+
+    FEATURE_NAMES = (
+        "typing_speed",
+        "typing_interval_variance",
+        "mouse_speed",
+        "click_interval",
+        "navigation_interval",
+    )
+
+    def __init__(
+        self,
+        minimum_features: int = 1,
+    ) -> None:
+
+        if minimum_features < 1:
+            raise ValueError(
+                "minimum_features must be at least 1."
+            )
+
+        if minimum_features > len(
+            self.FEATURE_NAMES
+        ):
+            raise ValueError(
+                "minimum_features cannot exceed "
+                "the number of supported behavioral features."
+            )
+
+        self.minimum_features = (
+            minimum_features
+        )
+
+    # ==========================================================
+    # OBSERVATION CONSTRUCTION
+    # ==========================================================
+
+    def build_observation(
+        self,
+        *,
+        typing_speed: float | None = None,
+        typing_interval_variance: float | None = None,
+        mouse_speed: float | None = None,
+        click_interval: float | None = None,
+        navigation_interval: float | None = None,
+    ) -> BehaviorObservation:
+        """
+        Construct a sanitized BehaviorObservation.
+
+        Invalid numerical values such as NaN, infinity, and
+        negative measurements are discarded rather than passed
+        into the assurance pipeline.
+        """
+
+        values = {
+            "typing_speed": typing_speed,
+            "typing_interval_variance": (
+                typing_interval_variance
+            ),
+            "mouse_speed": mouse_speed,
+            "click_interval": click_interval,
+            "navigation_interval": (
+                navigation_interval
+            ),
+        }
+
+        sanitized: dict[str, float] = {}
+
+        for name, value in values.items():
+
+            cleaned = self._sanitize_value(
+                value
+            )
+
+            if cleaned is not None:
+                sanitized[name] = cleaned
+
+        return BehaviorObservation(
+            **sanitized
+        )
+
+    # ==========================================================
+    # MAPPING SUPPORT
+    # ==========================================================
+
+    def from_mapping(
+        self,
+        values: Mapping[str, float | None],
+    ) -> BehaviorObservation:
+        """
+        Build an observation from a mapping.
+
+        Unknown fields are ignored.
+
+        This provides a clean boundary between an external
+        telemetry collector and the assurance engine.
+        """
+
+        supported = {
+            name: values.get(name)
+            for name in self.FEATURE_NAMES
+        }
+
+        return self.build_observation(
+            **supported
+        )
+
+    # ==========================================================
+    # QUALITY
+    # ==========================================================
+
+    def calculate_quality(
+        self,
+        observation: BehaviorObservation,
+    ) -> float:
+        """
+        Calculate observation quality based on feature
+        availability.
+
+        The result is always between 0.0 and 1.0.
+        """
+
+        return max(
+            0.0,
+            min(
+                1.0,
+                observation.completeness,
+            ),
+        )
+
+    # ==========================================================
+    # SIGNAL GENERATION
+    # ==========================================================
+
+    def generate(
+        self,
+        observation: BehaviorObservation,
+    ) -> SignalResult:
+        """
+        Generate a behavioral signal from an observation.
+
+        This signal represents the quality and availability
+        of behavioral evidence.
+
+        Actual behavioral consistency is evaluated later by
+        BehavioralVerifier against the learned profile.
+        """
+
+        quality = self.calculate_quality(
+            observation
+        )
+
+        feature_count = (
+            observation.feature_count
+        )
+
+        if feature_count < self.minimum_features:
+
+            return SignalResult(
+                source="behavioral_signals",
+                score=0.5,
+                confidence=0.0,
+                quality=quality,
+                status=SignalStatus.UNAVAILABLE,
+            )
+
+        if quality < 0.5:
+
+            status = SignalStatus.UNCERTAIN
+
+            confidence = 0.3
+
+        else:
+
+            status = SignalStatus.CONSISTENT
+
+            confidence = min(
+                1.0,
+                0.5 + (quality * 0.5),
+            )
+
+        return SignalResult(
+            source="behavioral_signals",
+            score=1.0,
+            confidence=confidence,
+            quality=quality,
+            status=status,
+        )
+
+    # ==========================================================
+    # FEATURE EXTRACTION
+    # ==========================================================
+
+    def extract_features(
+        self,
+        observation: BehaviorObservation,
+    ) -> dict[str, float]:
+        """
+        Return only available numerical behavioral features.
+
+        No raw user content is returned.
+        """
+
+        values = observation.model_dump(
+            exclude_none=True
+        )
+
+        result: dict[str, float] = {}
+
+        for name, value in values.items():
+
+            cleaned = self._sanitize_value(
+                value
+            )
+
+            if cleaned is not None:
+                result[name] = cleaned
+
+        return result
+
+    # ==========================================================
+    # VALIDATION
+    # ==========================================================
+
+    @staticmethod
+    def _sanitize_value(
+        value: float | None,
+    ) -> float | None:
+        """
+        Validate one behavioral measurement.
+
+        Returns None for unusable values.
+        """
+
+        if value is None:
+            return None
+
+        try:
+            numeric_value = float(value)
+
+        except (
+            TypeError,
+            ValueError,
+        ):
+            return None
+
+        if not math.isfinite(
+            numeric_value
+        ):
+            return None
+
+        if numeric_value < 0.0:
+            return None
+
+        return numeric_value
+
+===== FILE: app\engine\behavior_learning.py =====
+from datetime import datetime, timezone
+import math
+
+from app.config import BehavioralConfig
+from app.models.profile import (
+    FeatureStatistics,
+    UserProfile,
+)
+from app.models.signals import BehaviorObservation
+
+
+class BehavioralLearningEngine:
+    """
+    Incrementally learns a behavioral profile.
+
+    Important security properties:
+
+    - Raw history is not retained.
+    - Statistics are updated online.
+    - Extreme observations are prevented from dominating
+      established profiles.
+    - Missing features do not reset existing statistics.
+    - Learning stops treating the profile as untrusted once
+      sufficient observations have been collected.
+    """
+
+    def __init__(
+        self,
+        required_observations: int = 50,
+        behavioral_config: BehavioralConfig | None = None,
+    ) -> None:
+
+        self.config = (
+            behavioral_config
+            or BehavioralConfig(
+                required_observations=(
+                    required_observations
+                )
+            )
+        )
+
+        self.required_observations = (
+            self.config.required_observations
+        )
+
+    def update_profile(
+        self,
+        profile: UserProfile,
+        observation: BehaviorObservation,
+    ) -> UserProfile:
+
+        profile.required_observations = (
+            self.required_observations
+        )
+
+        values = observation.feature_values()
+
+        if not values:
+            return profile
+
+        accepted_features = 0
+
+        for feature_name, value in values.items():
+
+            if not math.isfinite(value):
+                continue
+
+            statistics = profile.features.get(
+                feature_name
+            )
+
+            if statistics is None:
+                statistics = FeatureStatistics()
+
+                profile.features[
+                    feature_name
+                ] = statistics
+
+            accepted = self._update_feature(
+                statistics,
+                value,
+            )
+
+            if accepted:
+                accepted_features += 1
+
+        if accepted_features == 0:
+            return profile
+
+        profile.observation_count += 1
+
+        profile.last_updated = (
+            datetime.now(timezone.utc)
+        )
+
+        profile.last_behavior_observation_at = (
+            observation.timestamp
+        )
+
+        if (
+            profile.observation_count
+            >= self.required_observations
+        ):
+            profile.state = "established"
+
+            if profile.established_at is None:
+                profile.established_at = (
+                    datetime.now(timezone.utc)
+                )
+
+        else:
+            profile.state = "learning"
+
+        return profile
+
+    def _update_feature(
+        self,
+        statistics: FeatureStatistics,
+        value: float,
+    ) -> bool:
+
+        old_count = statistics.count
+
+        if old_count >= (
+            self.config.minimum_feature_observations
+        ):
+
+            standard_deviation = math.sqrt(
+                max(
+                    statistics.variance,
+                    0.0,
+                )
+            )
+
+            standard_deviation = max(
+                standard_deviation,
+                0.001,
+            )
+
+            z_score = abs(
+                value - statistics.mean
+            ) / standard_deviation
+
+            if (
+                z_score
+                > self.config.maximum_update_z_score
+            ):
+                return False
+
+        new_count = old_count + 1
+
+        if old_count == 0:
+
+            statistics.count = 1
+            statistics.mean = value
+            statistics.variance = 0.0
+            statistics.minimum = value
+            statistics.maximum = value
+            statistics.last_updated = (
+                datetime.now(timezone.utc)
+            )
+
+            return True
+
+        delta = (
+            value
+            - statistics.mean
+        )
+
+        new_mean = (
+            statistics.mean
+            + delta / new_count
+        )
+
+        delta2 = (
+            value
+            - new_mean
+        )
+
+        old_m2 = (
+            statistics.variance
+            * old_count
+        )
+
+        new_m2 = (
+            old_m2
+            + delta * delta2
+        )
+
+        new_variance = (
+            new_m2 / new_count
+        )
+
+        statistics.count = new_count
+
+        statistics.mean = new_mean
+
+        statistics.variance = max(
+            0.0,
+            new_variance,
+        )
+
+        if statistics.minimum is None:
+            statistics.minimum = value
+        else:
+            statistics.minimum = min(
+                statistics.minimum,
+                value,
+            )
+
+        if statistics.maximum is None:
+            statistics.maximum = value
+        else:
+            statistics.maximum = max(
+                statistics.maximum,
+                value,
+            )
+
+        statistics.last_updated = (
+            datetime.now(timezone.utc)
+        )
+
+        return True
+
+===== FILE: app\engine\behavior_signals.py =====
+from __future__ import annotations
+
+import math
+from datetime import datetime, timezone
+
+from app.config import BehavioralConfig
+from app.models.profile import (
+    UserProfile,
+)
+from app.models.signals import (
+    BehaviorObservation,
+    SignalResult,
+    SignalStatus,
+)
+
+
+class BehavioralSignalsEngine:
+    """
+    Behavioral Signals Engine.
+
+    Converts behavioral observations and a learned profile
+    into a bounded SignalResult.
+
+    Security goals:
+
+    - complete feature mediation
+    - no trust in raw behavioral input
+    - bounded numerical output
+    - missing-feature awareness
+    - temporal consistency
+    - outlier resistance
+    - conservative confidence handling
+    """
+
+    def __init__(
+        self,
+        config: BehavioralConfig | None = None,
+    ) -> None:
+
+        self.config = (
+            config
+            or BehavioralConfig()
+        )
+
+    def evaluate(
+        self,
+        profile: UserProfile,
+        observation: BehaviorObservation,
+    ) -> SignalResult:
+
+        values = observation.feature_values()
+
+        if not values:
+
+            return SignalResult(
+                source="behavior",
+                score=0.5,
+                confidence=0.0,
+                quality=0.0,
+                status=SignalStatus.UNAVAILABLE,
+            )
+
+        finite_values = {
+            name: value
+            for name, value in values.items()
+            if math.isfinite(value)
+        }
+
+        if not finite_values:
+
+            return SignalResult(
+                source="behavior",
+                score=0.5,
+                confidence=0.0,
+                quality=0.0,
+                status=SignalStatus.UNAVAILABLE,
+            )
+
+        feature_scores: list[float] = []
+
+        feature_weights: list[float] = []
+
+        for (
+            feature_name,
+            value,
+        ) in finite_values.items():
+
+            statistics = profile.features.get(
+                feature_name
+            )
+
+            if statistics is None:
+                continue
+
+            if (
+                statistics.count
+                < self.config.minimum_feature_observations
+            ):
+                continue
+
+            score = self._feature_score(
+                statistics.mean,
+                statistics.variance,
+                value,
+            )
+
+            reliability = self._feature_reliability(
+                statistics.count
+            )
+
+            feature_scores.append(
+                score
+            )
+
+            feature_weights.append(
+                reliability
+            )
+
+        if not feature_scores:
+
+            return SignalResult(
+                source="behavior",
+                score=0.5,
+                confidence=0.25,
+                quality=self._observation_quality(
+                    profile,
+                    finite_values,
+                ),
+                status=SignalStatus.UNCERTAIN,
+            )
+
+        behavioral_score = self._weighted_average(
+            feature_scores,
+            feature_weights,
+        )
+
+        observation_quality = (
+            self._observation_quality(
+                profile,
+                finite_values,
+            )
+        )
+
+        temporal_score = (
+            self._temporal_consistency(
+                profile,
+                observation.timestamp,
+            )
+        )
+
+        combined_score = (
+            behavioral_score
+            * (0.80 + 0.20 * temporal_score)
+        )
+
+        combined_score = max(
+            0.0,
+            min(
+                1.0,
+                combined_score,
+            ),
+        )
+
+        confidence = self._confidence(
+            profile,
+            len(feature_scores),
+            observation_quality,
+            temporal_score,
+        )
+
+        status = self._status(
+            combined_score,
+            confidence,
+        )
+
+        return SignalResult(
+            source="behavior",
+            score=combined_score,
+            confidence=confidence,
+            quality=observation_quality,
+            status=status,
+        )
+
+    def _feature_score(
+        self,
+        mean: float,
+        variance: float,
+        value: float,
+    ) -> float:
+
+        standard_deviation = math.sqrt(
+            max(
+                variance,
+                0.0,
+            )
+        )
+
+        deviation = abs(
+            value - mean
+        )
+
+        if deviation == 0.0:
+            return 1.0
+
+        standard_deviation = max(
+            standard_deviation,
+            0.001,
+        )
+
+        z_score = (
+            deviation
+            / standard_deviation
+        )
+
+        # Huber-like transition:
+        #
+        # small deviations remain smooth,
+        # large deviations become increasingly
+        # suspicious without numerical instability.
+        if z_score <= 2.0:
+
+            score = math.exp(
+                -0.5
+                * (
+                    z_score ** 2
+                )
+            )
+
+        else:
+
+            score = math.exp(
+                -2.0
+                - (
+                    0.5
+                    * (
+                        z_score
+                        - 2.0
+                    )
+                )
+            )
+
+        return max(
+            0.0,
+            min(
+                1.0,
+                score,
+            ),
+        )
+
+    @staticmethod
+    def _feature_reliability(
+        count: int,
+    ) -> float:
+
+        if count <= 0:
+            return 0.0
+
+        # Reliability approaches 1 asymptotically.
+        return min(
+            1.0,
+            math.log1p(count)
+            / math.log1p(50),
+        )
+
+    def _observation_quality(
+        self,
+        profile: UserProfile,
+        values: dict[str, float],
+    ) -> float:
+
+        known_features = 0
+
+        for feature_name in values:
+
+            if feature_name in profile.features:
+                known_features += 1
+
+        total_expected = max(
+            len(profile.features),
+            1,
+        )
+
+        known_ratio = (
+            known_features
+            / total_expected
+        )
+
+        finite_ratio = (
+            len(values)
+            / max(
+                len(
+                    profile.features
+                ),
+                len(values),
+                1,
+            )
+        )
+
+        quality = (
+            0.60 * known_ratio
+            + 0.40 * finite_ratio
+        )
+
+        return max(
+            0.0,
+            min(
+                1.0,
+                quality,
+            ),
+        )
+
+    def _temporal_consistency(
+        self,
+        profile: UserProfile,
+        timestamp: datetime,
+    ) -> float:
+
+        previous = (
+            profile.last_behavior_observation_at
+        )
+
+        if previous is None:
+            return 1.0
+
+        current = timestamp
+
+        if current.tzinfo is None:
+            current = current.replace(
+                tzinfo=timezone.utc
+            )
+
+        if previous.tzinfo is None:
+            previous = previous.replace(
+                tzinfo=timezone.utc
+            )
+
+        gap = abs(
+            (
+                current
+                - previous
+            ).total_seconds()
+        )
+
+        if gap <= 0.0:
+            return 0.5
+
+        if (
+            gap
+            > self.config.maximum_temporal_gap_seconds
+        ):
+            return 0.75
+
+        return math.exp(
+            -gap
+            / self.config.temporal_decay_seconds
+        )
+
+    @staticmethod
+    def _weighted_average(
+        scores: list[float],
+        weights: list[float],
+    ) -> float:
+
+        if not scores:
+            return 0.5
+
+        total_weight = sum(weights)
+
+        if total_weight <= 0.0:
+            return sum(scores) / len(scores)
+
+        return (
+            sum(
+                score * weight
+                for score, weight
+                in zip(
+                    scores,
+                    weights,
+                )
+            )
+            / total_weight
+        )
+
+    @staticmethod
+    def _confidence(
+        profile: UserProfile,
+        feature_count: int,
+        quality: float,
+        temporal_score: float,
+    ) -> float:
+
+        maturity = min(
+            1.0,
+            profile.observation_count
+            / max(
+                profile.required_observations,
+                1,
+            ),
+        )
+
+        coverage = min(
+            1.0,
+            feature_count / 3.0,
+        )
+
+        confidence = (
+            0.40 * maturity
+            + 0.25 * coverage
+            + 0.20 * quality
+            + 0.15 * temporal_score
+        )
+
+        return max(
+            0.0,
+            min(
+                1.0,
+                confidence,
+            ),
+        )
+
+    def _status(
+        self,
+        score: float,
+        confidence: float,
+    ) -> SignalStatus:
+
+        if confidence < 0.30:
+            return SignalStatus.UNCERTAIN
+
+        if score >= self.config.consistency_threshold:
+            return SignalStatus.CONSISTENT
+
+        if score >= self.config.uncertainty_threshold:
+            return SignalStatus.UNCERTAIN
+
+        return SignalStatus.MISMATCH
+
+===== FILE: app\engine\behavior_verifier.py =====
+from app.config import BehavioralConfig
+from app.engine.behavior_signals import (
+    BehavioralSignalsEngine,
+)
+from app.models.profile import UserProfile
+from app.models.signals import (
+    BehaviorObservation,
+    SignalResult,
+)
+
+
+class BehavioralVerifier:
+    """
+    Backwards-compatible behavioral verifier.
+
+    The actual behavioral signal generation is delegated to
+    BehavioralSignalsEngine.
+    """
+
+    def __init__(
+        self,
+        config: BehavioralConfig | None = None,
+    ) -> None:
+
+        self.signal_engine = (
+            BehavioralSignalsEngine(
+                config=config,
+            )
+        )
+
+    def verify(
+        self,
+        profile: UserProfile,
+        observation: BehaviorObservation,
+    ) -> float:
+        """
+        Return only the behavioral score.
+
+        This method remains for compatibility with existing
+        callers and tests.
+        """
+
+        signal = self.verify_signal(
+            profile,
+            observation,
+        )
+
+        return signal.score
+
+    def verify_signal(
+        self,
+        profile: UserProfile,
+        observation: BehaviorObservation,
+    ) -> SignalResult:
+        """
+        Produce the complete behavioral signal.
+        """
+
+        return self.signal_engine.evaluate(
+            profile,
+            observation,
+        )
+
+===== FILE: app\engine\engine.py =====
+from app.config import AssuranceConfig
+
+from app.engine.behavioral_signals import (
+    BehavioralSignalsEngine,
+)
+
+from app.engine.behavior_verifier import (
+    BehavioralVerifier,
+)
+
+from app.engine.fusion import (
+    RiskFusionEngine,
+)
+
+from app.engine.policy import (
+    PolicyEngine,
+)
+
+from app.models.decision import (
+    AssuranceDecision,
+)
+
+from app.models.profile import (
+    UserProfile,
+)
+
+from app.models.signals import (
+    BehaviorObservation,
+    SignalResult,
+)
+
+from app.providers.context import (
+    ContextProvider,
+)
+
+from app.providers.face import (
+    FaceProvider,
+)
+
+
+class ContinuousAssuranceEngine:
+    """
+    Coordinates behavioral signal generation, verification,
+    signal fusion, and policy.
+
+    Architecture:
+
+        observation
+             |
+             v
+      behavioral signals
+             |
+             v
+        verification
+             |
+             v
+          signals
+             |
+             v
+           fusion
+             |
+             v
+      assurance result
+             |
+             v
+           policy
+             |
+             v
+       policy decision
+    """
+
+    def __init__(
+        self,
+        assurance_config: AssuranceConfig | None = None,
+        policy_engine: PolicyEngine | None = None,
+    ) -> None:
+
+        assurance_config = (
+            assurance_config
+            or AssuranceConfig()
+        )
+
+        # ==================================================
+        # BEHAVIORAL SIGNALS
+        # ==================================================
+
+        self.behavioral_signals_engine = (
+            BehavioralSignalsEngine()
+        )
+
+        # ==================================================
+        # BEHAVIORAL VERIFIER
+        # ==================================================
+
+        self.behavior_verifier = (
+            BehavioralVerifier()
+        )
+
+        # ==================================================
+        # OTHER PROVIDERS
+        # ==================================================
+
+        self.face_provider = (
+            FaceProvider()
+        )
+
+        self.context_provider = (
+            ContextProvider()
+        )
+
+        # ==================================================
+        # FUSION
+        # ==================================================
+
+        self.fusion_engine = (
+            RiskFusionEngine(
+                behavior_weight=(
+                    assurance_config.behavior_weight
+                ),
+                face_weight=(
+                    assurance_config.face_weight
+                ),
+                context_weight=(
+                    assurance_config.context_weight
+                ),
+            )
+        )
+
+        # ==================================================
+        # POLICY
+        # ==================================================
+
+        self.policy_engine = (
+            policy_engine
+            or PolicyEngine()
+        )
+
+    def evaluate(
+        self,
+        profile: UserProfile,
+        observation: BehaviorObservation,
+        face_signal: SignalResult | None = None,
+        context_signal: SignalResult | None = None,
+    ) -> AssuranceDecision:
+        """
+        Evaluate the current assurance state.
+
+        The behavioral signal engine first sanitizes the
+        observation boundary. The behavioral verifier then
+        compares the observation against the learned profile.
+        """
+
+        # ==================================================
+        # 1. BEHAVIORAL SIGNAL PREPARATION
+        # ==================================================
+
+        observation = (
+            self.behavioral_signals_engine.build_observation(
+                typing_speed=observation.typing_speed,
+                typing_interval_variance=(
+                    observation.typing_interval_variance
+                ),
+                mouse_speed=observation.mouse_speed,
+                click_interval=observation.click_interval,
+                navigation_interval=(
+                    observation.navigation_interval
+                ),
+            )
+        )
+
+        # ==================================================
+        # 2. BEHAVIOR VERIFICATION
+        # ==================================================
+
+        behavior_signal = (
+            self.behavior_verifier.verify_signal(
+                profile,
+                observation,
+            )
+        )
+
+        # ==================================================
+        # 3. FACE
+        # ==================================================
+
+        if face_signal is None:
+
+            face_signal = (
+                self.face_provider.generate()
+            )
+
+        # ==================================================
+        # 4. CONTEXT
+        # ==================================================
+
+        if context_signal is None:
+
+            context_signal = (
+                self.context_provider.generate()
+            )
+
+        # ==================================================
+        # 5. FUSION
+        # ==================================================
+
+        assurance = (
+            self.fusion_engine.fuse(
+                behavior=behavior_signal,
+                face=face_signal,
+                context=context_signal,
+            )
+        )
+
+        # ==================================================
+        # 6. POLICY
+        # ==================================================
+
+        return (
+            self.policy_engine.evaluate(
+                assurance
+            )
+        )
+
+===== FILE: app\engine\fusion.py =====
+from __future__ import annotations
+
+from app.models.assurance import AssuranceResult
+from app.models.signals import (
+    SignalResult,
+    SignalStatus,
+)
+
+
+class RiskFusionEngine:
+    """
+    Combines available assurance signals into a normalized
+    assurance and risk result.
+
+    Important properties:
+
+    - Signal score is affected by confidence and quality.
+    - UNAVAILABLE signals do not contribute negative evidence.
+    - Available signals retain their configured weights.
+    - Remaining weights are renormalized when a signal is
+      unavailable.
+    """
+
+    def __init__(
+        self,
+        behavior_weight: float = 0.60,
+        face_weight: float = 0.25,
+        context_weight: float = 0.15,
+    ) -> None:
+
+        weights = (
+            (
+                "behavior_weight",
+                behavior_weight,
+            ),
+            (
+                "face_weight",
+                face_weight,
+            ),
+            (
+                "context_weight",
+                context_weight,
+            ),
+        )
+
+        for name, value in weights:
+
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(
+                    f"{name} must be between 0.0 and 1.0."
+                )
+
+        if sum(
+            value
+            for _, value in weights
+        ) <= 0.0:
+
+            raise ValueError(
+                "At least one signal weight must "
+                "be greater than 0."
+            )
+
+        self.behavior_weight = behavior_weight
+        self.face_weight = face_weight
+        self.context_weight = context_weight
+
+    @staticmethod
+    def _is_available(
+        signal: SignalResult | None,
+    ) -> bool:
+
+        return (
+            signal is not None
+            and signal.status
+            != SignalStatus.UNAVAILABLE
+        )
+
+    def fuse(
+        self,
+        behavior: SignalResult | None = None,
+        face: SignalResult | None = None,
+        context: SignalResult | None = None,
+    ) -> AssuranceResult:
+
+        weighted_total = 0.0
+        total_weight = 0.0
+
+        signals = (
+            (
+                behavior,
+                self.behavior_weight,
+            ),
+            (
+                face,
+                self.face_weight,
+            ),
+            (
+                context,
+                self.context_weight,
+            ),
+        )
+
+        for signal, weight in signals:
+
+            if not self._is_available(signal):
+                continue
+
+            if weight <= 0.0:
+                continue
+
+            weighted_total += (
+                signal.effective_score
+                * weight
+            )
+
+            total_weight += weight
+
+        if total_weight <= 0.0:
+
+            assurance_score = 0.0
+
+        else:
+
+            assurance_score = (
+                weighted_total
+                / total_weight
+            )
+
+        assurance_score = max(
+            0.0,
+            min(
+                1.0,
+                assurance_score,
+            ),
+        )
+
+        risk_score = (
+            1.0
+            - assurance_score
+        )
+
+        return AssuranceResult(
+            assurance_score=assurance_score,
+            risk_score=risk_score,
+
+            behavior_score=(
+                behavior.score
+                if behavior is not None
+                else 0.0
+            ),
+
+            face_score=(
+                face.score
+                if face is not None
+                else 0.0
+            ),
+
+            context_score=(
+                context.score
+                if context is not None
+                else 0.0
+            ),
+        )
+
+===== FILE: app\engine\policy.py =====
+from app.config import PolicyConfig
+
+from app.models.decision import (
+    AssuranceResult,
+    DecisionAction,
+    PolicyDecision,
+)
+
+
+class PolicyEngine:
+    """
+    Converts an assurance result into a policy decision.
+
+    Policy is deliberately separate from signal fusion.
+    """
+
+    def __init__(
+        self,
+        config: PolicyConfig | None = None,
+    ) -> None:
+
+        self.config = (
+            config
+            or PolicyConfig()
+        )
+
+    def evaluate(
+        self,
+        assurance: AssuranceResult,
+    ) -> PolicyDecision:
+
+        score = (
+            assurance.assurance_score
+        )
+
+        if score >= self.config.allow_threshold:
+
+            return PolicyDecision(
+                action=DecisionAction.ALLOW,
+                reason=(
+                    "Assurance score is above "
+                    "the allow threshold."
+                ),
+                assurance_score=(
+                    assurance.assurance_score
+                ),
+                risk_score=(
+                    assurance.risk_score
+                ),
+                behavior_score=(
+                    assurance.behavior_score
+                ),
+                face_score=(
+                    assurance.face_score
+                ),
+                context_score=(
+                    assurance.context_score
+                ),
+            )
+
+        if score >= self.config.reverify_threshold:
+
+            return PolicyDecision(
+                action=DecisionAction.REVERIFY,
+                reason=(
+                    "Assurance score is below "
+                    "the allow threshold and "
+                    "requires reverification."
+                ),
+                assurance_score=(
+                    assurance.assurance_score
+                ),
+                risk_score=(
+                    assurance.risk_score
+                ),
+                behavior_score=(
+                    assurance.behavior_score
+                ),
+                face_score=(
+                    assurance.face_score
+                ),
+                context_score=(
+                    assurance.context_score
+                ),
+            )
+
+        return PolicyDecision(
+            action=DecisionAction.LOCK,
+            reason=(
+                "Assurance score is below "
+                "the reverification threshold."
+            ),
+            assurance_score=(
+                assurance.assurance_score
+            ),
+            risk_score=(
+                assurance.risk_score
+            ),
+            behavior_score=(
+                assurance.behavior_score
+            ),
+            face_score=(
+                assurance.face_score
+            ),
+            context_score=(
+                assurance.context_score
+            ),
+        )
+
+    def should_lock_after_failed_reverification(
+        self,
+        reverify_count: int,
+    ) -> bool:
+
+        return (
+            reverify_count
+            >= self.config.max_reverify_attempts
+        )
+
+===== FILE: app\engine\temporal.py =====
+from collections import deque
+
+
+class TemporalAnalyzer:
+
+    def __init__(
+        self,
+        window_size: int = 5,
+        anomaly_threshold: float = 0.30,
+    ):
+        self.window_size = window_size
+        self.anomaly_threshold = anomaly_threshold
+
+        self.history: dict[str, deque[float]] = {}
+        self.anomaly_streaks: dict[str, int] = {}
+
+    def update(
+        self,
+        session_id: str,
+        risk_score: float,
+    ) -> tuple[float, int]:
+
+        if session_id not in self.history:
+            self.history[session_id] = deque(
+                maxlen=self.window_size
+            )
+
+        if session_id not in self.anomaly_streaks:
+            self.anomaly_streaks[session_id] = 0
+
+        history = self.history[session_id]
+
+        history.append(risk_score)
+
+        if risk_score >= self.anomaly_threshold:
+            self.anomaly_streaks[session_id] += 1
+        else:
+            self.anomaly_streaks[session_id] = 0
+
+        # More recent observations receive more weight.
+        weights = range(1, len(history) + 1)
+
+        weighted_sum = sum(
+            risk * weight
+            for risk, weight in zip(history, weights)
+        )
+
+        total_weight = sum(weights)
+
+        temporal_risk = weighted_sum / total_weight
+
+        return temporal_risk, self.anomaly_streaks[session_id]
+
+    def clear(self, session_id: str):
+        self.history.pop(session_id, None)
+        self.anomaly_streaks.pop(session_id, None)
+
+===== FILE: app\engine\validator.py =====
+from app.models.signals import SignalResult
+
+
+class SignalValidator:
+
+    REQUIRED_SOURCES = {"face", "behavior", "context"}
+
+    def validate(self, signals: list[SignalResult]) -> list[SignalResult]:
+        """
+        Validate and normalize incoming signals.
+
+        Missing signals are allowed. An unavailable signal is
+        different from a mismatch.
+        """
+
+        validated = []
+
+        for signal in signals:
+            if not 0.0 <= signal.score <= 1.0:
+                raise ValueError(
+                    f"Invalid score from {signal.source}"
+                )
+
+            if not 0.0 <= signal.confidence <= 1.0:
+                raise ValueError(
+                    f"Invalid confidence from {signal.source}"
+                )
+
+            if not 0.0 <= signal.quality <= 1.0:
+                raise ValueError(
+                    f"Invalid quality from {signal.source}"
+                )
+
+            validated.append(signal)
+
+        return validated
+
+===== FILE: app\engine\__init__.py =====
+
+===== FILE: app\models\assurance.py =====
+from pydantic import BaseModel, Field
+
+
+class AssuranceResult(BaseModel):
+    """
+    Combined assurance evidence before security policy
+    is applied.
+
+    This model deliberately contains no security action.
+
+    The fusion layer calculates evidence.
+    The policy layer determines the action.
+    """
+
+    assurance_score: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+
+    risk_score: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+
+    behavior_score: float | None = None
+
+    face_score: float | None = None
+
+    context_score: float | None = None
+
+===== FILE: app\models\audit.py =====
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Any, Optional
+
+from pydantic import BaseModel, Field
+
+
+class AuditEventType(str, Enum):
+    """
+    Security-relevant lifecycle events.
+    """
+
+    LOGIN_SUCCESS = "login_success"
+    LOGIN_FAILURE = "login_failure"
+
+    BEHAVIOR_OBSERVATION = "behavior_observation"
+
+    ASSURANCE_EVALUATED = "assurance_evaluated"
+
+    REVERIFICATION_REQUIRED = "reverification_required"
+
+    REVERIFICATION_SUCCESS = "reverification_success"
+
+    REVERIFICATION_FAILURE = "reverification_failure"
+
+    SESSION_ACTIVATED = "session_activated"
+
+    SESSION_EXPIRED = "session_expired"
+
+    SESSION_LOCKED = "session_locked"
+
+    SESSION_LOGGED_OUT = "session_logged_out"
+
+    PROTECTED_RESOURCE_ACCESS = "protected_resource_access"
+
+
+class AuditEvent(BaseModel):
+    """
+    Privacy-conscious audit record.
+
+    Raw behavioral information must never be placed here.
+    """
+
+    event_type: AuditEventType
+
+    user_id: Optional[str] = None
+
+    session_id: Optional[str] = None
+
+    action: Optional[str] = None
+
+    reason: Optional[str] = None
+
+    assurance_score: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+
+    risk_score: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+    )
+
+    timestamp: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+
+===== FILE: app\models\behavior.py =====
+from typing import Optional
+
+from pydantic import BaseModel
+
+
+class BehaviorObservation(BaseModel):
+    typing_speed: Optional[float] = None
+    typing_interval_variance: Optional[float] = None
+    mouse_speed: Optional[float] = None
+    click_interval: Optional[float] = None
+    navigation_interval: Optional[float] = None
+
+    def feature_values(self) -> dict[str, float]:
+        """
+        Return only the behavioral features that are actually available.
+
+        This is the canonical representation consumed by the
+        BehavioralSignalsEngine and BehavioralLearningEngine.
+        """
+        values: dict[str, float] = {}
+
+        features = (
+            "typing_speed",
+            "typing_interval_variance",
+            "mouse_speed",
+            "click_interval",
+            "navigation_interval",
+        )
+
+        for feature in features:
+            value = getattr(self, feature, None)
+
+            if value is None:
+                continue
+
+            try:
+                numeric_value = float(value)
+            except (TypeError, ValueError):
+                continue
+
+            if not numeric_value == numeric_value:
+                continue
+
+            values[feature] = numeric_value
+
+        return values
+
+    def feature_count(self) -> int:
+        return len(self.feature_values())
+
+===== FILE: app\models\decision.py =====
+from enum import Enum
+
+from pydantic import BaseModel, Field
+
+
+class DecisionAction(str, Enum):
+    """
+    Action selected by the policy engine.
+    """
+
+    ALLOW = "allow"
+    REVERIFY = "reverify"
+    LOCK = "lock"
+
+
+class AssuranceResult(BaseModel):
+    """
+    Result produced by the assurance/fusion layer.
+
+    This model intentionally contains no policy action.
+    """
+
+    assurance_score: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+
+    risk_score: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+
+    behavior_score: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+
+    face_score: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+
+    context_score: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+
+
+class PolicyDecision(BaseModel):
+    """
+    Policy interpretation of an assurance result.
+    """
+
+    action: DecisionAction
+
+    reason: str
+
+    assurance_score: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+
+    risk_score: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+
+    behavior_score: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+
+    face_score: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+
+    context_score: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+
+
+# Backwards-compatible name used by the existing application.
+AssuranceDecision = PolicyDecision
+
+===== FILE: app\models\policy.py =====
+from pydantic import BaseModel, Field
+
+
+class PolicyConfig(BaseModel):
+    """
+    Security policy configuration.
+
+    The fusion engine calculates assurance.
+    This model defines how assurance translates
+    into security actions.
+    """
+
+    allow_threshold: float = Field(
+        default=0.75,
+        ge=0.0,
+        le=1.0,
+    )
+
+    reverify_threshold: float = Field(
+        default=0.45,
+        ge=0.0,
+        le=1.0,
+    )
+
+    max_reverify_attempts: int = Field(
+        default=3,
+        ge=1,
+    )
+
+===== FILE: app\models\profile.py =====
+from datetime import datetime, timezone
+from typing import Optional
+
+from pydantic import BaseModel, Field
+
+
+class FeatureStatistics(BaseModel):
+    """
+    Online robust-enough statistics for one behavioral feature.
+
+    M2 stores the accumulated squared deviation needed for
+    numerically stable variance calculation.
+
+    The existing variance field remains part of the public model
+    for compatibility.
+    """
+
+    count: int = 0
+
+    mean: float = 0.0
+
+    variance: float = 0.0
+
+    minimum: Optional[float] = None
+
+    maximum: Optional[float] = None
+
+    last_updated: Optional[datetime] = None
+
+
+class UserProfile(BaseModel):
+    user_id: str
+
+    state: str = "new"
+
+    observation_count: int = 0
+
+    required_observations: int = 50
+
+    established_at: Optional[datetime] = None
+
+    last_updated: datetime = Field(
+        default_factory=lambda: datetime.now(
+            timezone.utc
+        )
+    )
+
+    last_behavior_observation_at: Optional[datetime] = None
+
+    behavior_quality: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+    )
+
+    features: dict[str, FeatureStatistics] = Field(
+        default_factory=dict
+    )
+
+===== FILE: app\models\session.py =====
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Optional
+
+from pydantic import BaseModel, Field
+
+
+class SessionState(str, Enum):
+    """
+    Explicit session lifecycle states.
+    """
+
+    ACTIVE = "active"
+    REVERIFY = "reverify"
+    LOCKED = "locked"
+
+
+class Session(BaseModel):
+    """
+    Server-side session state.
+
+    Session lifecycle transitions should be performed
+    through SessionStore rather than directly by API routes.
+    """
+
+    session_id: str
+
+    user_id: str
+
+    state: SessionState = SessionState.ACTIVE
+
+    behavior_score: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+
+    assurance_score: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+
+    risk_score: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+    )
+
+    reverify_count: int = 0
+
+    lock_reason: Optional[str] = None
+
+    created_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+
+    last_activity_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+
+    state_changed_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+
+    @property
+    def active(self) -> bool:
+        return self.state == SessionState.ACTIVE
+
+    @property
+    def requires_reverification(self) -> bool:
+        return self.state == SessionState.REVERIFY
+
+    @property
+    def is_locked(self) -> bool:
+        return self.state == SessionState.LOCKED
+
+===== FILE: app\models\signals.py =====
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Optional
+
+from pydantic import BaseModel, Field
+
+
+class SignalStatus(str, Enum):
+    CONSISTENT = "consistent"
+    UNCERTAIN = "uncertain"
+    MISMATCH = "mismatch"
+    UNAVAILABLE = "unavailable"
+
+
+class SignalResult(BaseModel):
+    """
+    Result produced by an individual assurance provider.
+    """
+
+    source: str
+
+    score: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+
+    confidence: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+
+    quality: float = Field(
+        ge=0.0,
+        le=1.0,
+    )
+
+    status: SignalStatus
+
+    timestamp: datetime = Field(
+        default_factory=lambda: datetime.now(
+            timezone.utc
+        )
+    )
+
+    @property
+    def effective_score(self) -> float:
+        """
+        Score adjusted for confidence and observation quality.
+        """
+
+        return (
+            self.score
+            * self.confidence
+            * self.quality
+        )
+
+
+class BehaviorObservation(BaseModel):
+    """
+    Privacy-conscious numerical representation of user behavior.
+
+    Raw sensitive content is deliberately excluded.
+
+    We do not store:
+
+    - keyboard characters
+    - passwords
+    - mouse coordinates
+    - page contents
+    """
+
+    typing_speed: Optional[float] = None
+
+    typing_interval_variance: Optional[float] = None
+
+    mouse_speed: Optional[float] = None
+
+    click_interval: Optional[float] = None
+
+    navigation_interval: Optional[float] = None
+
+    @property
+    def feature_count(self) -> int:
+        """
+        Number of behavioral features currently available.
+        """
+
+        return sum(
+            value is not None
+            for value in self.model_dump().values()
+        )
+
+    @property
+    def completeness(self) -> float:
+        """
+        Fraction of supported behavioral features that
+        are currently available.
+        """
+
+        total_features = len(
+            self.model_fields
+        )
+
+        if total_features == 0:
+            return 0.0
+
+        return (
+            self.feature_count
+            / total_features
+        )
+
+===== FILE: app\models\__init__.py =====
+
+===== FILE: app\policy\policy_engine.py =====
+from app.models.decision import (
+    AssuranceDecision,
+    DecisionAction,
+)
+
+
+class PolicyEngine:
+
+    """
+    Converts an assurance/risk assessment into a
+    security policy decision.
+
+    The fusion engine determines the assurance score.
+
+    The policy engine determines the security action.
+    """
+
+    def evaluate(
+        self,
+        decision: AssuranceDecision,
+    ) -> AssuranceDecision:
+
+        risk = decision.risk_score
+
+        # ==================================================
+        # LOW RISK
+        # ==================================================
+
+        if risk < 0.25:
+
+            return decision.model_copy(
+                update={
+                    "action": DecisionAction.ALLOW,
+                    "reason": (
+                        "Session risk is low."
+                    ),
+                }
+            )
+
+        # ==================================================
+        # MODERATE RISK
+        # ==================================================
+
+        if risk < 0.55:
+
+            return decision.model_copy(
+                update={
+                    "action": DecisionAction.REVERIFY,
+                    "reason": (
+                        "Session risk requires "
+                        "additional identity verification."
+                    ),
+                }
+            )
+
+        # ==================================================
+        # HIGH RISK
+        # ==================================================
+
+        return decision.model_copy(
+            update={
+                "action": DecisionAction.LOCK,
+                "reason": (
+                    "Session risk is high."
+                ),
+            }
+        )
+
+===== FILE: app\policy\__init__.py =====
+
+===== FILE: app\providers\behavior.py =====
+from app.models.signals import (
+    BehaviorObservation,
+    SignalResult,
+    SignalStatus,
+)
+
+
+class BehaviorProvider:
+
+    def create_observation(
+        self,
+        typing_speed: float,
+        typing_interval_variance: float,
+        mouse_speed: float,
+        click_interval: float,
+        navigation_interval: float,
+    ) -> BehaviorObservation:
+
+        return BehaviorObservation(
+            typing_speed=typing_speed,
+            typing_interval_variance=typing_interval_variance,
+            mouse_speed=mouse_speed,
+            click_interval=click_interval,
+            navigation_interval=navigation_interval,
+        )
+
+    def create_signal(
+        self,
+        score: float,
+        confidence: float = 0.90,
+        quality: float = 0.95,
+        status: SignalStatus = SignalStatus.CONSISTENT,
+    ) -> SignalResult:
+
+        return SignalResult(
+            source="behavior",
+            score=score,
+            confidence=confidence,
+            quality=quality,
+            status=status,
+        )
+
+===== FILE: app\providers\context.py =====
+from app.models.signals import (
+    SignalResult,
+    SignalStatus,
+)
+
+
+class ContextProvider:
+    """
+    Simulated contextual assurance provider.
+
+    The interface is intentionally independent of the eventual
+    implementation.
+
+    A production implementation can later provide evidence such
+    as:
+
+    - device consistency
+    - session timing
+    - network consistency
+    - navigation consistency
+    - session activity
+
+    Raw sensitive information is not exposed through this
+    interface.
+
+    The default simulated result represents consistent context.
+    """
+
+    def generate(
+        self,
+        score: float = 1.0,
+        confidence: float = 1.0,
+        quality: float = 1.0,
+        status: SignalStatus = SignalStatus.CONSISTENT,
+    ) -> SignalResult:
+        return SignalResult(
+            source="context",
+            score=score,
+            confidence=confidence,
+            quality=quality,
+            status=status,
+        )
+
+===== FILE: app\providers\face.py =====
+from app.models.signals import (
+    SignalResult,
+    SignalStatus,
+)
+
+
+class FaceProvider:
+    """
+    Simulated face-verification provider.
+    """
+
+    def generate(
+        self,
+        score: float = 1.0,
+        confidence: float = 1.0,
+        quality: float = 1.0,
+        status: SignalStatus = SignalStatus.CONSISTENT,
+    ) -> SignalResult:
+        return SignalResult(
+            source="face",
+            score=score,
+            confidence=confidence,
+            quality=quality,
+            status=status,
+        )
+
+===== FILE: app\providers\__init__.py =====
+
+===== FILE: app\storage\profile_store.py =====
+from app.models.profile import UserProfile
+
+
+class ProfileStore:
+
+    def __init__(self):
+        self.profiles: dict[str, UserProfile] = {}
+
+    def get_or_create(
+        self,
+        user_id: str,
+    ) -> UserProfile:
+
+        if user_id not in self.profiles:
+
+            self.profiles[user_id] = UserProfile(
+                user_id=user_id
+            )
+
+        return self.profiles[user_id]
+
+    def save(
+        self,
+        profile: UserProfile,
+    ):
+
+        self.profiles[profile.user_id] = profile
+
+===== FILE: app\storage\session_store.py =====
+from datetime import datetime, timezone
+from typing import Callable
+
+from app.audit.logger import (
+    AuditLogger,
+)
+
+from app.config import (
+    SessionConfig,
+)
+
+from app.models.audit import (
+    AuditEvent,
+    AuditEventType,
+)
+
+from app.models.decision import (
+    DecisionAction,
+)
+
+from app.models.session import (
+    Session,
+    SessionState,
+)
+
+
+class SessionStore:
+    """
+    In-memory session store.
+
+    This class owns session lifecycle transitions.
+
+    Lifecycle responsibilities include:
+    - session creation
+    - activity tracking
+    - inactivity expiration
+    - reverification transitions
+    - activation
+    - locking
+    - logout
+    - policy action application
+    - lifecycle audit events
+
+    The clock is injected so time-dependent behavior can be
+    tested deterministically without patching datetime.now().
+    """
+
+    def __init__(
+        self,
+        audit_logger: AuditLogger | None = None,
+        config: SessionConfig | None = None,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        self._sessions: dict[
+            str,
+            Session,
+        ] = {}
+
+        self._audit_logger = audit_logger
+
+        self._config = (
+            config
+            or SessionConfig()
+        )
+
+        self._clock = (
+            clock
+            or self._default_clock
+        )
+
+    # ======================================================
+    # INTERNAL HELPERS
+    # ======================================================
+
+    @staticmethod
+    def _default_clock() -> datetime:
+        """
+        Return the current UTC time.
+        """
+
+        return datetime.now(
+            timezone.utc
+        )
+
+    def _now(self) -> datetime:
+        """
+        Return the current time from the injected clock.
+        """
+
+        return self._clock()
+
+    def _audit(
+        self,
+        event_type: AuditEventType,
+        *,
+        session: Session,
+        action: str | None = None,
+        reason: str | None = None,
+    ) -> None:
+        if self._audit_logger is None:
+            return
+
+        self._audit_logger.record(
+            AuditEvent(
+                event_type=event_type,
+                user_id=session.user_id,
+                session_id=session.session_id,
+                action=action,
+                reason=reason,
+                assurance_score=(
+                    session.assurance_score
+                ),
+                risk_score=(
+                    session.risk_score
+                ),
+            )
+        )
+
+    # ======================================================
+    # CREATE
+    # ======================================================
+
+    def create(
+        self,
+        session_id: str,
+        user_id: str,
+    ) -> Session:
+        if session_id in self._sessions:
+            raise ValueError(
+                "Session already exists."
+            )
+
+        now = self._now()
+
+        session = Session(
+            session_id=session_id,
+            user_id=user_id,
+            created_at=now,
+            last_activity_at=now,
+            state_changed_at=now,
+        )
+
+        self._sessions[
+            session_id
+        ] = session
+
+        self._audit(
+            AuditEventType.SESSION_ACTIVATED,
+            session=session,
+            action="create",
+            reason=(
+                "Authenticated session created."
+            ),
+        )
+
+        return session
+
+    # ======================================================
+    # GET
+    # ======================================================
+
+    def get(
+        self,
+        session_id: str,
+    ) -> Session | None:
+        return self._sessions.get(
+            session_id
+        )
+
+    # ======================================================
+    # TOUCH
+    # ======================================================
+
+    def touch(
+        self,
+        session: Session,
+    ) -> Session:
+        if session.is_locked:
+            return session
+
+        if self.is_expired(session):
+            self.expire(session)
+            return session
+
+        session.last_activity_at = (
+            self._now()
+        )
+
+        return session
+
+    # ======================================================
+    # EXPIRATION
+    # ======================================================
+
+    def is_expired(
+        self,
+        session: Session,
+        now: datetime | None = None,
+    ) -> bool:
+        """
+        Determine whether a session has exceeded its
+        configured inactivity timeout.
+
+        A timeout of zero disables inactivity expiration.
+
+        Locked sessions are never considered newly expired.
+        """
+
+        if session.is_locked:
+            return False
+
+        timeout_seconds = (
+            self._config.inactivity_timeout_seconds
+        )
+
+        if timeout_seconds == 0:
+            return False
+
+        current_time = (
+            now
+            if now is not None
+            else self._now()
+        )
+
+        elapsed = (
+            current_time
+            - session.last_activity_at
+        ).total_seconds()
+
+        return elapsed >= timeout_seconds
+
+    def ensure_valid(
+        self,
+        session: Session,
+    ) -> Session:
+        """
+        Ensure the session has not expired.
+
+        If inactivity expiration has occurred, the session
+        is transitioned to LOCKED through expire().
+        """
+
+        if session.is_locked:
+            return session
+
+        if self.is_expired(session):
+            self.expire(session)
+
+        return session
+
+    def expire(
+        self,
+        session: Session,
+    ) -> Session:
+        """
+        Permanently expire a session due to inactivity.
+
+        Expiration is terminal because it transitions the
+        session to LOCKED.
+        """
+
+        if session.is_locked:
+            return session
+
+        reason = (
+            "Session expired due to inactivity."
+        )
+
+        self.lock(
+            session,
+            reason=reason,
+            audit_event_type=(
+                AuditEventType.SESSION_EXPIRED
+            ),
+        )
+
+        return session
+
+    # ======================================================
+    # MARK REVERIFY
+    # ======================================================
+
+    def mark_reverify(
+        self,
+        session: Session,
+        *,
+        reason: str | None = None,
+    ) -> Session:
+        if session.is_locked:
+            return session
+
+        now = self._now()
+
+        previous_state = session.state
+
+        session.state = (
+            SessionState.REVERIFY
+        )
+
+        session.reverify_count += 1
+
+        session.state_changed_at = now
+
+        session.last_activity_at = now
+
+        if previous_state != SessionState.REVERIFY:
+            self._audit(
+                AuditEventType.REVERIFICATION_REQUIRED,
+                session=session,
+                action="reverify",
+                reason=reason,
+            )
+
+        return session
+
+    # ======================================================
+    # ACTIVATE
+    # ======================================================
+
+    def activate(
+        self,
+        session: Session,
+        *,
+        reason: str | None = None,
+    ) -> Session:
+        """
+        Activate a session.
+
+        Locked sessions are terminal and cannot be activated.
+        """
+
+        if session.is_locked:
+            return session
+
+        now = self._now()
+
+        previous_state = session.state
+
+        session.state = (
+            SessionState.ACTIVE
+        )
+
+        session.lock_reason = None
+
+        session.state_changed_at = now
+
+        session.last_activity_at = now
+
+        if previous_state != SessionState.ACTIVE:
+            self._audit(
+                AuditEventType.SESSION_ACTIVATED,
+                session=session,
+                action="activate",
+                reason=(
+                    reason
+                    or
+                    "Session activated."
+                ),
+            )
+
+        return session
+
+    # ======================================================
+    # LOCK
+    # ======================================================
+
+    def lock(
+        self,
+        session: Session,
+        reason: str,
+        *,
+        audit_event_type: AuditEventType = (
+            AuditEventType.SESSION_LOCKED
+        ),
+    ) -> Session:
+        """
+        Permanently lock a session.
+
+        LOCKED is terminal. A locked session cannot later be
+        activated or restored.
+        """
+
+        if session.is_locked:
+            return session
+
+        now = self._now()
+
+        session.state = (
+            SessionState.LOCKED
+        )
+
+        session.lock_reason = reason
+
+        session.state_changed_at = now
+
+        session.last_activity_at = now
+
+        self._audit(
+            audit_event_type,
+            session=session,
+            action="lock",
+            reason=reason,
+        )
+
+        return session
+
+    # ======================================================
+    # LOGOUT
+    # ======================================================
+
+    def logout(
+        self,
+        session: Session,
+    ) -> Session:
+        """
+        Permanently terminate an authenticated session.
+
+        Logout is intentionally terminal and uses the same
+        server-side LOCKED state so an already issued session
+        identifier can never be reused to regain access.
+
+        The distinction between logout and security locking is
+        preserved through the audit event and lock reason.
+        """
+
+        if session.is_locked:
+            return session
+
+        reason = (
+            "Session logged out by the authenticated user."
+        )
+
+        return self.lock(
+            session,
+            reason=reason,
+            audit_event_type=(
+                AuditEventType.SESSION_LOGGED_OUT
+            ),
+        )
+
+    # ======================================================
+    # APPLY POLICY ACTION
+    # ======================================================
+
+    def apply_action(
+        self,
+        session: Session,
+        action: DecisionAction | str,
+        reason: str,
+    ) -> Session:
+        if isinstance(action, str):
+            action = DecisionAction(
+                action
+            )
+
+        if session.is_locked:
+            return session
+
+        if action == DecisionAction.ALLOW:
+            self.activate(
+                session,
+                reason=reason,
+            )
+
+            return session
+
+        if action == DecisionAction.REVERIFY:
+            self.mark_reverify(
+                session,
+                reason=reason,
+            )
+
+            return session
+
+        if action == DecisionAction.LOCK:
+            self.lock(
+                session,
+                reason=reason,
+            )
+
+            return session
+
+        raise ValueError(
+            f"Unsupported session action: {action}"
+        )
+
+    # ======================================================
+    # DELETE
+    # ======================================================
+
+    def delete(
+        self,
+        session_id: str,
+    ) -> None:
+        self._sessions.pop(
+            session_id,
+            None,
+        )
+
+    # ======================================================
+    # CLEAR
+    # ======================================================
+
+    def clear(self) -> None:
+        self._sessions.clear()
+
+    # ======================================================
+    # COUNT
+    # ======================================================
+
+    def count(self) -> int:
+        return len(
+            self._sessions
+        )
+
+===== FILE: app\storage\__init__.py =====
+
+===== FILE: tests\test_api_logout.py =====
+from fastapi.testclient import TestClient
+
+from app.main import app, session_store
+from app.models.audit import AuditEventType
+
+
+def login(client: TestClient) -> str:
+    response = client.post(
+        "/api/login",
+        json={
+            "username": "researcher",
+            "password": "research123",
+        },
+    )
+
+    assert response.status_code == 200
+
+    session_id = response.cookies.get(
+        "session_id"
+    )
+
+    assert session_id is not None
+
+    return session_id
+
+
+def test_logout_successfully_terminates_session():
+    client = TestClient(app)
+
+    session_id = login(client)
+
+    session = session_store.get(
+        session_id
+    )
+
+    assert session is not None
+
+    response = client.post(
+        "/api/logout"
+    )
+
+    assert response.status_code == 200
+
+    body = response.json()
+
+    assert body["authenticated"] is False
+    assert body["logged_out"] is True
+
+    assert session.is_locked
+
+
+def test_logout_clears_session_cookie():
+    client = TestClient(app)
+
+    login(client)
+
+    response = client.post(
+        "/api/logout"
+    )
+
+    assert response.status_code == 200
+
+    set_cookie = response.headers.get(
+        "set-cookie",
+        ""
+    )
+
+    assert "session_id=" in set_cookie
+
+
+def test_logout_generates_audit_event():
+    client = TestClient(app)
+
+    session_id = login(client)
+
+    response = client.post(
+        "/api/logout"
+    )
+
+    assert response.status_code == 200
+
+    events = session_store._audit_logger.list_events()
+
+    logout_events = [
+        event
+        for event in events
+        if event.event_type
+        == AuditEventType.SESSION_LOGGED_OUT
+        and event.session_id == session_id
+    ]
+
+    assert len(logout_events) == 1
+
+
+def test_revoked_session_cannot_access_protected_resource():
+    client = TestClient(app)
+
+    session_id = login(client)
+
+    session = session_store.get(
+        session_id
+    )
+
+    assert session is not None
+
+    session_store.logout(
+        session
+    )
+
+    response = client.get(
+        "/api/protected/resource"
+    )
+
+    assert response.status_code == 401
+
+    assert (
+        "logged out"
+        in response.json()["detail"].lower()
+        or
+        "locked"
+        in response.json()["detail"].lower()
+    )
+
+
+def test_revoked_session_cannot_submit_behavior():
+    client = TestClient(app)
+
+    session_id = login(client)
+
+    session = session_store.get(
+        session_id
+    )
+
+    assert session is not None
+
+    session_store.logout(
+        session
+    )
+
+    response = client.post(
+        "/api/behavior/observation",
+        json={
+            "mouse_speed": 10.0,
+            "typing_speed": 5.0,
+            "session_duration": 60.0,
+        },
+    )
+
+    assert response.status_code == 401
+
+
+def test_logout_is_terminal():
+    client = TestClient(app)
+
+    session_id = login(client)
+
+    session = session_store.get(
+        session_id
+    )
+
+    assert session is not None
+
+    session_store.logout(
+        session
+    )
+
+    assert session.is_locked
+
+    session_store.activate(
+        session,
+        reason="attempted recovery",
+    )
+
+    assert session.is_locked
+
+
+def test_logout_without_authentication_is_rejected():
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/logout"
+    )
+
+    assert response.status_code == 401
+
+
+def test_new_login_creates_new_session_after_logout():
+    client = TestClient(app)
+
+    first_session_id = login(client)
+
+    response = client.post(
+        "/api/logout"
+    )
+
+    assert response.status_code == 200
+
+    second_session_id = login(client)
+
+    assert (
+        second_session_id
+        != first_session_id
+    )
+
+===== FILE: tests\test_api_session_protection.py =====
+from fastapi.testclient import TestClient
+
+from app.main import app
+
+
+client = TestClient(app)
+
+
+def login():
+    response = client.post(
+        "/api/login",
+        json={
+            "username": "researcher",
+            "password": "research123",
+        },
+    )
+
+    assert response.status_code == 200
+
+    return response
+
+
+def observation(
+    typing_speed=1.2,
+    mouse_speed=20.0,
+    click_interval=38.0,
+):
+
+    return {
+        "typing_speed": typing_speed,
+        "mouse_speed": mouse_speed,
+        "click_interval": click_interval,
+    }
+
+
+def test_login_creates_authenticated_session():
+
+    response = login()
+
+    data = response.json()
+
+    assert data["authenticated"] is True
+
+    assert data["session_status"] == "active"
+
+
+def test_behavior_observation_requires_session():
+
+    isolated_client = TestClient(app)
+
+    response = isolated_client.post(
+        "/api/behavior/observation",
+        json=observation(),
+    )
+
+    assert response.status_code == 401
+
+
+def test_behavior_learning():
+
+    isolated_client = TestClient(app)
+
+    response = isolated_client.post(
+        "/api/login",
+        json={
+            "username": "researcher",
+            "password": "research123",
+        },
+    )
+
+    assert response.status_code == 200
+
+    for _ in range(5):
+
+        response = isolated_client.post(
+            "/api/behavior/observation",
+            json=observation(),
+        )
+
+        assert response.status_code == 200
+
+        data = response.json()
+
+        assert data["mode"] == "learning"
+
+        assert (
+            data["session_state"]
+            == "active"
+        )
+
+        assert (
+            data["session_active"]
+            is True
+        )
+
+
+def test_session_status():
+
+    isolated_client = TestClient(app)
+
+    response = isolated_client.post(
+        "/api/login",
+        json={
+            "username": "researcher",
+            "password": "research123",
+        },
+    )
+
+    assert response.status_code == 200
+
+    response = isolated_client.get(
+        "/api/session/status"
+    )
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["authenticated"] is True
+
+    assert data["active"] is True
+
+    assert data["state"] == "active"
+
+    assert (
+        data["reverify_count"]
+        == 0
+    )
+
+    assert data["lock_reason"] is None
+
+
+def test_session_status_contains_assurance_fields():
+
+    isolated_client = TestClient(app)
+
+    response = isolated_client.post(
+        "/api/login",
+        json={
+            "username": "researcher",
+            "password": "research123",
+        },
+    )
+
+    assert response.status_code == 200
+
+    response = isolated_client.get(
+        "/api/session/status"
+    )
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert "behavior_score" in data
+
+    assert "assurance_score" in data
+
+    assert "risk_score" in data
+
+    assert "state" in data
+
+
+def test_locked_session_cannot_submit_behavior():
+
+    isolated_client = TestClient(app)
+
+    response = isolated_client.post(
+        "/api/login",
+        json={
+            "username": "researcher",
+            "password": "research123",
+        },
+    )
+
+    assert response.status_code == 200
+
+    session_id = (
+        response.cookies.get(
+            "session_id"
+        )
+    )
+
+    assert session_id is not None
+
+    # Import the application's actual session store.
+    from app.main import session_store
+
+    session = session_store.get(
+        session_id
+    )
+
+    assert session is not None
+
+    session_store.lock(
+        session,
+        reason="Test lock.",
+    )
+
+    response = isolated_client.post(
+        "/api/behavior/observation",
+        json=observation(),
+    )
+
+    assert response.status_code == 401
+
+    assert (
+        "locked"
+        in response.json()["detail"].lower()
+    )
+
+
+def test_reverify_session_requires_identity_verification():
+
+    isolated_client = TestClient(app)
+
+    response = isolated_client.post(
+        "/api/login",
+        json={
+            "username": "researcher",
+            "password": "research123",
+        },
+    )
+
+    assert response.status_code == 200
+
+    session_id = (
+        response.cookies.get(
+            "session_id"
+        )
+    )
+
+    assert session_id is not None
+
+    from app.main import session_store
+
+    session = session_store.get(
+        session_id
+    )
+
+    assert session is not None
+
+    session_store.mark_reverify(
+        session
+    )
+
+    response = isolated_client.post(
+        "/api/behavior/observation",
+        json=observation(),
+    )
+
+    assert response.status_code == 403
+
+    assert (
+        "verification"
+        in response.json()["detail"].lower()
+    )
+
+
+def test_locked_session_status():
+
+    isolated_client = TestClient(app)
+
+    response = isolated_client.post(
+        "/api/login",
+        json={
+            "username": "researcher",
+            "password": "research123",
+        },
+    )
+
+    assert response.status_code == 200
+
+    session_id = (
+        response.cookies.get(
+            "session_id"
+        )
+    )
+
+    assert session_id is not None
+
+    from app.main import session_store
+
+    session = session_store.get(
+        session_id
+    )
+
+    assert session is not None
+
+    session_store.lock(
+        session,
+        reason="Identity verification failed.",
+    )
+
+    response = isolated_client.get(
+        "/api/session/status"
+    )
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["state"] == "locked"
+
+    assert data["active"] is False
+
+    assert data["authenticated"] is False
+
+    assert (
+        data["lock_reason"]
+        == "Identity verification failed."
+    )
+
+    def test_active_session_can_access_protected_resource():
+
+       isolated_client = TestClient(app)
+
+    response = isolated_client.post(
+        "/api/login",
+        json={
+            "username": "researcher",
+            "password": "research123",
+        },
+    )
+
+    assert response.status_code == 200
+
+    response = isolated_client.get(
+        "/api/protected/resource"
+    )
+
+    assert response.status_code == 200
+
+    data = response.json()
+
+    assert data["authorized"] is True
+
+    assert data["resource"] == "protected"
+
+    assert data["session_state"] == "active"
+
+
+def test_protected_resource_requires_authentication():
+
+    isolated_client = TestClient(app)
+
+    response = isolated_client.get(
+        "/api/protected/resource"
+    )
+
+    assert response.status_code == 401
+
+
+def test_reverify_session_cannot_access_protected_resource():
+
+    isolated_client = TestClient(app)
+
+    response = isolated_client.post(
+        "/api/login",
+        json={
+            "username": "researcher",
+            "password": "research123",
+        },
+    )
+
+    assert response.status_code == 200
+
+    session_id = response.cookies.get(
+        "session_id"
+    )
+
+    assert session_id is not None
+
+    from app.main import session_store
+
+    session = session_store.get(
+        session_id
+    )
+
+    assert session is not None
+
+    session_store.mark_reverify(
+        session
+    )
+
+    response = isolated_client.get(
+        "/api/protected/resource"
+    )
+
+    assert response.status_code == 403
+
+    assert (
+        "verification"
+        in response.json()["detail"].lower()
+    )
+
+
+def test_locked_session_cannot_access_protected_resource():
+
+    isolated_client = TestClient(app)
+
+    response = isolated_client.post(
+        "/api/login",
+        json={
+            "username": "researcher",
+            "password": "research123",
+        },
+    )
+
+    assert response.status_code == 200
+
+    session_id = response.cookies.get(
+        "session_id"
+    )
+
+    assert session_id is not None
+
+    from app.main import session_store
+
+    session = session_store.get(
+        session_id
+    )
+
+    assert session is not None
+
+    session_store.lock(
+        session,
+        reason="Identity verification failed.",
+    )
+
+    response = isolated_client.get(
+        "/api/protected/resource"
+    )
+
+    assert response.status_code == 401
+
+    assert (
+        "locked"
+        in response.json()["detail"].lower()
+    )
+
+===== FILE: tests\test_assurance_engine.py =====
+from app.engine.engine import (
+    ContinuousAssuranceEngine,
+)
+
+from app.models.profile import (
+    FeatureStatistics,
+    UserProfile,
+)
+
+from app.models.signals import (
+    BehaviorObservation,
+    SignalStatus,
+)
+
+
+def established_profile():
+
+    profile = UserProfile(
+        user_id="researcher",
+        state="established",
+        observation_count=50,
+    )
+
+    profile.features = {
+
+        "typing_speed":
+            FeatureStatistics(
+                count=50,
+                mean=1.2,
+                variance=0.01,
+            ),
+
+        "mouse_speed":
+            FeatureStatistics(
+                count=50,
+                mean=20.0,
+                variance=4.0,
+            ),
+
+        "click_interval":
+            FeatureStatistics(
+                count=50,
+                mean=38.0,
+                variance=4.0,
+            ),
+    }
+
+    return profile
+
+
+def test_consistent_behavior_allows():
+
+    engine = (
+        ContinuousAssuranceEngine()
+    )
+
+    profile = (
+        established_profile()
+    )
+
+    observation = (
+        BehaviorObservation(
+            typing_speed=1.2,
+            mouse_speed=20.0,
+            click_interval=38.0,
+        )
+    )
+
+    decision = engine.evaluate(
+        profile,
+        observation,
+    )
+
+    assert (
+        decision.action.value
+        == "allow"
+    )
+
+    assert (
+        decision.assurance_score
+        >= 0.75
+    )
+
+    assert (
+        decision.behavior_score
+        is not None
+    )
+
+    assert (
+        decision.face_score
+        is not None
+    )
+
+    assert (
+        decision.context_score
+        is not None
+    )
+
+
+def test_unusual_behavior_reduces_assurance():
+
+    engine = (
+        ContinuousAssuranceEngine()
+    )
+
+    profile = (
+        established_profile()
+    )
+
+    observation = (
+        BehaviorObservation(
+            typing_speed=5.0,
+            mouse_speed=100.0,
+            click_interval=2.0,
+        )
+    )
+
+    decision = engine.evaluate(
+        profile,
+        observation,
+    )
+
+    assert (
+        decision.assurance_score
+        < 0.45
+    )
+
+    assert (
+        decision.action.value
+        == "lock"
+    )
+
+
+def test_face_signal_can_be_supplied():
+
+    engine = (
+        ContinuousAssuranceEngine()
+    )
+
+    profile = (
+        established_profile()
+    )
+
+    observation = (
+        BehaviorObservation(
+            typing_speed=1.2,
+            mouse_speed=20.0,
+            click_interval=38.0,
+        )
+    )
+
+    face_signal = (
+        engine.face_provider.generate(
+            score=0.80,
+            confidence=1.0,
+            quality=1.0,
+        )
+    )
+
+    decision = engine.evaluate(
+        profile,
+        observation,
+        face_signal=face_signal,
+    )
+
+    assert (
+        decision.face_score
+        == 0.80
+    )
+
+    assert (
+        decision.action.value
+        == "allow"
+    )
+
+
+def test_context_signal_can_be_supplied():
+
+    engine = (
+        ContinuousAssuranceEngine()
+    )
+
+    profile = (
+        established_profile()
+    )
+
+    observation = (
+        BehaviorObservation(
+            typing_speed=1.2,
+            mouse_speed=20.0,
+            click_interval=38.0,
+        )
+    )
+
+    context_signal = (
+        engine.context_provider.generate(
+            score=0.70,
+            confidence=1.0,
+            quality=1.0,
+        )
+    )
+
+    decision = engine.evaluate(
+        profile,
+        observation,
+        context_signal=context_signal,
+    )
+
+    assert (
+        decision.context_score
+        == 0.70
+    )
+
+    assert (
+        decision.action.value
+        == "allow"
+    )
+
+
+def test_unavailable_context_is_ignored():
+
+    engine = (
+        ContinuousAssuranceEngine()
+    )
+
+    profile = (
+        established_profile()
+    )
+
+    observation = (
+        BehaviorObservation(
+            typing_speed=1.2,
+            mouse_speed=20.0,
+            click_interval=38.0,
+        )
+    )
+
+    context_signal = (
+        engine.context_provider.generate(
+            score=0.0,
+            confidence=0.0,
+            quality=0.0,
+            status=(
+                SignalStatus.UNAVAILABLE
+            ),
+        )
+    )
+
+    decision = engine.evaluate(
+        profile,
+        observation,
+        context_signal=context_signal,
+    )
+
+    assert (
+        decision.context_score
+        == 0.0
+    )
+
+    assert (
+        decision.action.value
+        == "allow"
+    )
+
+
+def test_behavior_remains_primary_signal():
+
+    engine = (
+        ContinuousAssuranceEngine()
+    )
+
+    profile = (
+        established_profile()
+    )
+
+    observation = (
+        BehaviorObservation(
+            typing_speed=5.0,
+            mouse_speed=100.0,
+            click_interval=2.0,
+        )
+    )
+
+    face_signal = (
+        engine.face_provider.generate(
+            score=1.0,
+            confidence=1.0,
+            quality=1.0,
+        )
+    )
+
+    context_signal = (
+        engine.context_provider.generate(
+            score=1.0,
+            confidence=1.0,
+            quality=1.0,
+        )
+    )
+
+    decision = engine.evaluate(
+        profile,
+        observation,
+        face_signal=face_signal,
+        context_signal=context_signal,
+    )
+
+    assert (
+        decision.behavior_score
+        is not None
+    )
+
+    assert (
+        decision.face_score
+        == 1.0
+    )
+
+    assert (
+        decision.context_score
+        == 1.0
+    )
+
+    assert (
+        decision.assurance_score
+        < 0.75
+    )
+
+===== FILE: tests\test_audit.py =====
+from app.audit.logger import (
+    AuditLogger,
+)
+
+from app.models.audit import (
+    AuditEvent,
+    AuditEventType,
+)
+
+
+def test_audit_event_is_recorded():
+
+    logger = AuditLogger()
+
+    logger.record(
+        AuditEvent(
+            event_type=(
+                AuditEventType.LOGIN_SUCCESS
+            ),
+            user_id="researcher",
+            session_id="session-1",
+        )
+    )
+
+    events = logger.list_events()
+
+    assert len(events) == 1
+
+    assert (
+        events[0].event_type
+        == AuditEventType.LOGIN_SUCCESS
+    )
+
+    assert (
+        events[0].user_id
+        == "researcher"
+    )
+
+
+def test_audit_logger_can_be_cleared():
+
+    logger = AuditLogger()
+
+    logger.record(
+        AuditEvent(
+            event_type=(
+                AuditEventType.LOGIN_SUCCESS
+            ),
+        )
+    )
+
+    assert logger.count() == 1
+
+    logger.clear()
+
+    assert logger.count() == 0
+
+
+def test_audit_logger_respects_max_events():
+
+    from app.config import AuditConfig
+
+    logger = AuditLogger(
+        AuditConfig(
+            enabled=True,
+            max_events=2,
+        )
+    )
+
+    for index in range(3):
+
+        logger.record(
+            AuditEvent(
+                event_type=(
+                    AuditEventType.LOGIN_SUCCESS
+                ),
+                metadata={
+                    "index": index,
+                },
+            )
+        )
+
+    events = logger.list_events()
+
+    assert len(events) == 2
+
+    assert (
+        events[0].metadata["index"]
+        == 1
+    )
+
+    assert (
+        events[1].metadata["index"]
+        == 2
+    )
+
+===== FILE: tests\test_behavioral_signals.py =====
+import math
+
+import pytest
+
+from app.engine.behavioral_signals import (
+    BehavioralSignalsEngine,
+)
+
+from app.models.signals import (
+    BehaviorObservation,
+    SignalStatus,
+)
+
+
+def test_build_observation_creates_numeric_observation():
+
+    engine = BehavioralSignalsEngine()
+
+    observation = engine.build_observation(
+        typing_speed=1.2,
+        mouse_speed=20.0,
+        click_interval=38.0,
+    )
+
+    assert (
+        observation.typing_speed
+        == 1.2
+    )
+
+    assert (
+        observation.mouse_speed
+        == 20.0
+    )
+
+    assert (
+        observation.click_interval
+        == 38.0
+    )
+
+
+def test_build_observation_discards_nan():
+
+    engine = BehavioralSignalsEngine()
+
+    observation = engine.build_observation(
+        typing_speed=math.nan,
+        mouse_speed=20.0,
+    )
+
+    assert (
+        observation.typing_speed
+        is None
+    )
+
+    assert (
+        observation.mouse_speed
+        == 20.0
+    )
+
+
+def test_build_observation_discards_infinity():
+
+    engine = BehavioralSignalsEngine()
+
+    observation = engine.build_observation(
+        typing_speed=math.inf,
+        mouse_speed=20.0,
+    )
+
+    assert (
+        observation.typing_speed
+        is None
+    )
+
+    assert (
+        observation.mouse_speed
+        == 20.0
+    )
+
+
+def test_build_observation_discards_negative_values():
+
+    engine = BehavioralSignalsEngine()
+
+    observation = engine.build_observation(
+        typing_speed=-1.0,
+        mouse_speed=20.0,
+    )
+
+    assert (
+        observation.typing_speed
+        is None
+    )
+
+    assert (
+        observation.mouse_speed
+        == 20.0
+    )
+
+
+def test_feature_count():
+
+    observation = BehaviorObservation(
+        typing_speed=1.2,
+        mouse_speed=20.0,
+        click_interval=38.0,
+    )
+
+    assert (
+        observation.feature_count
+        == 3
+    )
+
+
+def test_completeness():
+
+    observation = BehaviorObservation(
+        typing_speed=1.2,
+        mouse_speed=20.0,
+    )
+
+    assert (
+        observation.completeness
+        == pytest.approx(0.4)
+    )
+
+
+def test_quality_matches_feature_completeness():
+
+    engine = BehavioralSignalsEngine()
+
+    observation = BehaviorObservation(
+        typing_speed=1.2,
+        mouse_speed=20.0,
+    )
+
+    quality = engine.calculate_quality(
+        observation
+    )
+
+    assert quality == pytest.approx(
+        0.4
+    )
+
+
+def test_generate_signal_with_no_features_is_unavailable():
+
+    engine = BehavioralSignalsEngine()
+
+    observation = BehaviorObservation()
+
+    signal = engine.generate(
+        observation
+    )
+
+    assert (
+        signal.status
+        == SignalStatus.UNAVAILABLE
+    )
+
+    assert (
+        signal.confidence
+        == 0.0
+    )
+
+
+def test_generate_signal_with_features():
+
+    engine = BehavioralSignalsEngine()
+
+    observation = BehaviorObservation(
+        typing_speed=1.2,
+        mouse_speed=20.0,
+        click_interval=38.0,
+    )
+
+    signal = engine.generate(
+        observation
+    )
+
+    assert (
+        signal.status
+        == SignalStatus.CONSISTENT
+    )
+
+    assert (
+        signal.score
+        == 1.0
+    )
+
+    assert (
+        signal.quality
+        == pytest.approx(0.6)
+    )
+
+
+def test_extract_features_returns_only_available_values():
+
+    engine = BehavioralSignalsEngine()
+
+    observation = BehaviorObservation(
+        typing_speed=1.2,
+        mouse_speed=20.0,
+        click_interval=None,
+    )
+
+    features = engine.extract_features(
+        observation
+    )
+
+    assert features == {
+        "typing_speed": 1.2,
+        "mouse_speed": 20.0,
+    }
+
+
+def test_from_mapping():
+
+    engine = BehavioralSignalsEngine()
+
+    observation = engine.from_mapping(
+        {
+            "typing_speed": 1.2,
+            "mouse_speed": 20.0,
+            "click_interval": 38.0,
+            "unknown_field": 999.0,
+        }
+    )
+
+    assert (
+        observation.typing_speed
+        == 1.2
+    )
+
+    assert (
+        observation.mouse_speed
+        == 20.0
+    )
+
+    assert (
+        observation.click_interval
+        == 38.0
+    )
+
+    assert (
+        not hasattr(
+            observation,
+            "unknown_field",
+        )
+    )
+
+
+def test_custom_minimum_features():
+
+    engine = BehavioralSignalsEngine(
+        minimum_features=3
+    )
+
+    observation = BehaviorObservation(
+        typing_speed=1.2,
+        mouse_speed=20.0,
+    )
+
+    signal = engine.generate(
+        observation
+    )
+
+    assert (
+        signal.status
+        == SignalStatus.UNAVAILABLE
+    )
+
+
+def test_invalid_minimum_features():
+
+    with pytest.raises(
+        ValueError
+    ):
+
+        BehavioralSignalsEngine(
+            minimum_features=0
+        )
+
+
+def test_minimum_features_cannot_exceed_supported_features():
+
+    with pytest.raises(
+        ValueError
+    ):
+
+        BehavioralSignalsEngine(
+            minimum_features=6
+        )
+
+===== FILE: tests\test_behavioral_signals_engine.py =====
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from app.config import BehavioralConfig
+from app.engine.behavior_learning import (
+    BehavioralLearningEngine,
+)
+from app.engine.behavior_signals import (
+    BehavioralSignalsEngine,
+)
+from app.models.profile import (
+    FeatureStatistics,
+    UserProfile,
+)
+from app.models.signals import (
+    BehaviorObservation,
+    SignalStatus,
+)
+
+
+def established_profile():
+    profile = UserProfile(
+        user_id="researcher",
+        state="established",
+        observation_count=50,
+        required_observations=50,
+    )
+
+    profile.features = {
+        "typing_speed": FeatureStatistics(
+            count=50,
+            mean=1.2,
+            variance=0.01,
+        ),
+        "mouse_speed": FeatureStatistics(
+            count=50,
+            mean=20.0,
+            variance=4.0,
+        ),
+        "click_interval": FeatureStatistics(
+            count=50,
+            mean=38.0,
+            variance=4.0,
+        ),
+    }
+
+    return profile
+
+
+def test_exact_match_produces_strong_signal():
+
+    engine = BehavioralSignalsEngine()
+
+    profile = established_profile()
+
+    observation = BehaviorObservation(
+        typing_speed=1.2,
+        mouse_speed=20.0,
+        click_interval=38.0,
+    )
+
+    signal = engine.evaluate(
+        profile,
+        observation,
+    )
+
+    assert signal.score >= 0.95
+
+    assert signal.confidence > 0.75
+
+    assert signal.quality > 0.75
+
+    assert (
+        signal.status
+        == SignalStatus.CONSISTENT
+    )
+
+
+def test_large_deviation_produces_mismatch():
+
+    engine = BehavioralSignalsEngine()
+
+    profile = established_profile()
+
+    observation = BehaviorObservation(
+        typing_speed=5.0,
+        mouse_speed=100.0,
+        click_interval=2.0,
+    )
+
+    signal = engine.evaluate(
+        profile,
+        observation,
+    )
+
+    assert signal.score < 0.45
+
+    assert (
+        signal.status
+        == SignalStatus.MISMATCH
+    )
+
+
+def test_missing_observation_is_not_trusted():
+
+    engine = BehavioralSignalsEngine()
+
+    profile = established_profile()
+
+    observation = BehaviorObservation()
+
+    signal = engine.evaluate(
+        profile,
+        observation,
+    )
+
+    assert (
+        signal.status
+        == SignalStatus.UNAVAILABLE
+    )
+
+    assert signal.confidence == 0.0
+
+    assert signal.quality == 0.0
+
+
+def test_unknown_feature_does_not_create_confidence():
+
+    engine = BehavioralSignalsEngine()
+
+    profile = established_profile()
+
+    observation = BehaviorObservation(
+        navigation_interval=2.0,
+    )
+
+    signal = engine.evaluate(
+        profile,
+        observation,
+    )
+
+    assert (
+        signal.status
+        == SignalStatus.UNCERTAIN
+    )
+
+    assert signal.confidence <= 0.30
+
+
+def test_learning_engine_rejects_extreme_poisoning():
+
+    config = BehavioralConfig(
+        required_observations=5,
+        maximum_update_z_score=4.0,
+    )
+
+    learner = BehavioralLearningEngine(
+        behavioral_config=config,
+    )
+
+    profile = UserProfile(
+        user_id="researcher",
+        required_observations=5,
+    )
+
+    normal = BehaviorObservation(
+        typing_speed=1.2,
+    )
+
+    for _ in range(5):
+        learner.update_profile(
+            profile,
+            normal,
+        )
+
+    statistics = profile.features[
+        "typing_speed"
+    ]
+
+    original_mean = statistics.mean
+
+    poisoned = BehaviorObservation(
+        typing_speed=1000000.0,
+    )
+
+    learner.update_profile(
+        profile,
+        poisoned,
+    )
+
+    assert (
+        profile.features[
+            "typing_speed"
+        ].mean
+        == pytest.approx(
+            original_mean
+        )
+    )
+
+
+def test_learning_is_incremental():
+
+    learner = BehavioralLearningEngine(
+        required_observations=3,
+    )
+
+    profile = UserProfile(
+        user_id="researcher",
+    )
+
+    observations = [
+        BehaviorObservation(
+            typing_speed=1.0,
+        ),
+        BehaviorObservation(
+            typing_speed=2.0,
+        ),
+        BehaviorObservation(
+            typing_speed=3.0,
+        ),
+    ]
+
+    for observation in observations:
+        learner.update_profile(
+            profile,
+            observation,
+        )
+
+    statistics = profile.features[
+        "typing_speed"
+    ]
+
+    assert statistics.count == 3
+
+    assert statistics.mean == pytest.approx(
+        2.0
+    )
+
+    assert statistics.variance == pytest.approx(
+        2.0 / 3.0
+    )
+
+    assert profile.state == "established"
+
+
+def test_temporal_gap_does_not_create_false_confidence():
+
+    engine = BehavioralSignalsEngine()
+
+    profile = established_profile()
+
+    profile.last_behavior_observation_at = (
+        datetime.now(timezone.utc)
+        - timedelta(
+            seconds=300
+        )
+    )
+
+    observation = BehaviorObservation(
+        typing_speed=1.2,
+        mouse_speed=20.0,
+        click_interval=38.0,
+    )
+
+    signal = engine.evaluate(
+        profile,
+        observation,
+    )
+
+    assert 0.0 <= signal.score <= 1.0
+
+    assert 0.0 <= signal.confidence <= 1.0
+
+    assert 0.0 <= signal.quality <= 1.0
+
+
+def test_scores_are_always_bounded():
+
+    engine = BehavioralSignalsEngine()
+
+    profile = established_profile()
+
+    observation = BehaviorObservation(
+        typing_speed=-999999.0,
+        mouse_speed=999999.0,
+        click_interval=-999999.0,
+    )
+
+    signal = engine.evaluate(
+        profile,
+        observation,
+    )
+
+    assert 0.0 <= signal.score <= 1.0
+
+    assert 0.0 <= signal.confidence <= 1.0
+
+    assert 0.0 <= signal.quality <= 1.0
+
+===== FILE: tests\test_behavior_learning.py =====
+from app.engine.behavior_learning import (
+    BehavioralLearningEngine,
+)
+
+from app.engine.behavior_verifier import (
+    BehavioralVerifier,
+)
+
+from app.models.profile import UserProfile
+
+from app.models.signals import (
+    BehaviorObservation,
+)
+
+
+def create_normal_observation():
+
+    return BehaviorObservation(
+        typing_speed=5.0,
+        typing_interval_variance=0.8,
+        mouse_speed=400.0,
+        click_interval=1.5,
+        navigation_interval=10.0,
+    )
+
+
+def test_profile_learns():
+
+    profile = UserProfile(
+        user_id="user-001"
+    )
+
+    learner = BehavioralLearningEngine(
+        required_observations=10
+    )
+
+    for _ in range(10):
+
+        learner.update_profile(
+            profile,
+            create_normal_observation(),
+        )
+
+    assert profile.state == "established"
+
+    assert profile.observation_count == 10
+
+
+def test_normal_behavior_scores_high():
+
+    profile = UserProfile(
+        user_id="user-001"
+    )
+
+    learner = BehavioralLearningEngine(
+        required_observations=10
+    )
+
+    for _ in range(10):
+
+        learner.update_profile(
+            profile,
+            create_normal_observation(),
+        )
+
+    verifier = BehavioralVerifier()
+
+    score = verifier.verify(
+        profile,
+        create_normal_observation(),
+    )
+
+    assert score > 0.8
+
+
+def test_anomalous_behavior_scores_lower():
+
+    profile = UserProfile(
+        user_id="user-001"
+    )
+
+    learner = BehavioralLearningEngine(
+        required_observations=10
+    )
+
+    for _ in range(10):
+
+        learner.update_profile(
+            profile,
+            create_normal_observation(),
+        )
+
+    unusual = BehaviorObservation(
+        typing_speed=20.0,
+        typing_interval_variance=8.0,
+        mouse_speed=2000.0,
+        click_interval=0.1,
+        navigation_interval=0.5,
+    )
+
+    verifier = BehavioralVerifier()
+
+    score = verifier.verify(
+        profile,
+        unusual,
+    )
+
+    assert score < 0.5
+
+===== FILE: tests\test_config.py =====
+import pytest
+
+from app.config import (
+    AssuranceConfig,
+    PolicyConfig,
+)
+
+
+def test_default_assurance_weights_sum_to_one():
+
+    config = AssuranceConfig()
+
+    total = (
+        config.behavior_weight
+        + config.face_weight
+        + config.context_weight
+    )
+
+    assert total == pytest.approx(1.0)
+
+
+def test_invalid_assurance_weights_are_rejected():
+
+    with pytest.raises(ValueError):
+
+        AssuranceConfig(
+            behavior_weight=0.50,
+            face_weight=0.50,
+            context_weight=0.50,
+        )
+
+
+def test_policy_thresholds_are_valid():
+
+    config = PolicyConfig()
+
+    assert (
+        config.reverify_threshold
+        < config.allow_threshold
+    )
+
+    assert (
+        config.max_reverify_attempts
+        >= 1
+    )
+
+
+def test_invalid_policy_thresholds_are_rejected():
+
+    with pytest.raises(ValueError):
+
+        PolicyConfig(
+            allow_threshold=0.40,
+            reverify_threshold=0.50,
+        )
+
+===== FILE: tests\test_engine.py =====
+
+===== FILE: tests\test_fusion.py =====
+import pytest
+
+from app.engine.fusion import (
+    RiskFusionEngine,
+)
+
+from app.models.signals import (
+    SignalResult,
+    SignalStatus,
+)
+
+
+def signal(
+    source: str,
+    score: float,
+    confidence: float = 1.0,
+    quality: float = 1.0,
+    status: SignalStatus = SignalStatus.CONSISTENT,
+):
+    return SignalResult(
+        source=source,
+        score=score,
+        confidence=confidence,
+        quality=quality,
+        status=status,
+    )
+
+
+def test_single_signal_fusion():
+
+    engine = RiskFusionEngine(
+        behavior_weight=1.0,
+        face_weight=0.0,
+        context_weight=0.0,
+    )
+
+    result = engine.fuse(
+        behavior=signal(
+            "behavior",
+            0.80,
+        )
+    )
+
+    assert result.assurance_score == pytest.approx(
+        0.80
+    )
+
+    assert result.risk_score == pytest.approx(
+        0.20
+    )
+
+
+def test_confidence_and_quality_affect_score():
+
+    engine = RiskFusionEngine(
+        behavior_weight=1.0,
+        face_weight=0.0,
+        context_weight=0.0,
+    )
+
+    result = engine.fuse(
+        behavior=signal(
+            "behavior",
+            score=1.0,
+            confidence=0.8,
+            quality=0.5,
+        )
+    )
+
+    assert result.assurance_score == pytest.approx(
+        0.40
+    )
+
+
+def test_unavailable_signal_is_ignored():
+
+    engine = RiskFusionEngine(
+        behavior_weight=0.6,
+        face_weight=0.4,
+        context_weight=0.0,
+    )
+
+    behavior = signal(
+        "behavior",
+        score=0.80,
+    )
+
+    face = signal(
+        "face",
+        score=0.0,
+        confidence=0.0,
+        quality=0.0,
+        status=SignalStatus.UNAVAILABLE,
+    )
+
+    result = engine.fuse(
+        behavior=behavior,
+        face=face,
+    )
+
+    assert result.assurance_score == pytest.approx(
+        0.80
+    )
+
+
+def test_weights_are_renormalized_when_signal_unavailable():
+
+    engine = RiskFusionEngine(
+        behavior_weight=0.6,
+        face_weight=0.4,
+        context_weight=0.0,
+    )
+
+    result = engine.fuse(
+        behavior=signal(
+            "behavior",
+            0.50,
+        ),
+        face=signal(
+            "face",
+            0.0,
+            confidence=0.0,
+            quality=0.0,
+            status=SignalStatus.UNAVAILABLE,
+        ),
+    )
+
+    assert result.assurance_score == pytest.approx(
+        0.50
+    )
+
+
+def test_multiple_signals_are_weighted():
+
+    engine = RiskFusionEngine(
+        behavior_weight=0.6,
+        face_weight=0.25,
+        context_weight=0.15,
+    )
+
+    result = engine.fuse(
+        behavior=signal(
+            "behavior",
+            0.80,
+        ),
+        face=signal(
+            "face",
+            0.90,
+        ),
+        context=signal(
+            "context",
+            1.00,
+        ),
+    )
+
+    expected = (
+        0.80 * 0.60
+        + 0.90 * 0.25
+        + 1.00 * 0.15
+    )
+
+    assert result.assurance_score == pytest.approx(
+        expected
+    )
+
+
+def test_zero_weights_are_rejected():
+
+    with pytest.raises(ValueError):
+
+        RiskFusionEngine(
+            behavior_weight=0.0,
+            face_weight=0.0,
+            context_weight=0.0,
+        )
+
+===== FILE: tests\test_policy.py =====
+from app.engine.policy import (
+    PolicyEngine,
+)
+
+from app.models.assurance import (
+    AssuranceResult,
+)
+
+from app.models.decision import (
+    DecisionAction,
+)
+
+
+def test_strong_assurance_allows():
+
+    policy = PolicyEngine()
+
+    assurance = AssuranceResult(
+        assurance_score=0.90,
+        risk_score=0.10,
+        behavior_score=0.90,
+        face_score=0.95,
+        context_score=0.95,
+    )
+
+    decision = policy.evaluate(
+        assurance
+    )
+
+    assert (
+        decision.action
+        == DecisionAction.ALLOW
+    )
+
+    assert decision.assurance_score == 0.90
+
+    assert decision.risk_score == 0.10
+
+
+def test_uncertain_assurance_requires_reverification():
+
+    policy = PolicyEngine()
+
+    assurance = AssuranceResult(
+        assurance_score=0.60,
+        risk_score=0.40,
+        behavior_score=0.60,
+        face_score=0.80,
+        context_score=0.80,
+    )
+
+    decision = policy.evaluate(
+        assurance
+    )
+
+    assert (
+        decision.action
+        == DecisionAction.REVERIFY
+    )
+
+
+def test_low_assurance_locks():
+
+    policy = PolicyEngine()
+
+    assurance = AssuranceResult(
+        assurance_score=0.20,
+        risk_score=0.80,
+        behavior_score=0.20,
+        face_score=0.20,
+        context_score=0.20,
+    )
+
+    decision = policy.evaluate(
+        assurance
+    )
+
+    assert (
+        decision.action
+        == DecisionAction.LOCK
+    )
+
+
+def test_policy_preserves_signal_scores():
+
+    policy = PolicyEngine()
+
+    assurance = AssuranceResult(
+        assurance_score=0.80,
+        risk_score=0.20,
+        behavior_score=0.75,
+        face_score=0.90,
+        context_score=0.85,
+    )
+
+    decision = policy.evaluate(
+        assurance
+    )
+
+    assert decision.behavior_score == 0.75
+
+    assert decision.face_score == 0.90
+
+    assert decision.context_score == 0.85
+
+===== FILE: tests\test_reverification.py =====
+from fastapi.testclient import TestClient
+
+from app.main import (
+    app,
+    session_store,
+)
+
+
+client = TestClient(app)
+
+
+def login():
+
+    response = client.post(
+        "/api/login",
+        json={
+            "username": "researcher",
+            "password": "research123",
+        },
+    )
+
+    assert response.status_code == 200
+
+    return response
+
+
+def test_successful_reverification_restores_active_session():
+
+    isolated_client = TestClient(app)
+
+    response = isolated_client.post(
+        "/api/login",
+        json={
+            "username": "researcher",
+            "password": "research123",
+        },
+    )
+
+    assert response.status_code == 200
+
+
+    session_id = (
+        response.cookies.get(
+            "session_id"
+        )
+    )
+
+    assert session_id is not None
+
+
+    session = session_store.get(
+        session_id
+    )
+
+    assert session is not None
+
+
+    session_store.mark_reverify(
+        session
+    )
+
+
+    response = isolated_client.post(
+        "/api/session/reverify",
+        json={
+            "verified": True,
+        },
+    )
+
+
+    assert response.status_code == 200
+
+
+    data = response.json()
+
+
+    assert data["verified"] is True
+
+    assert (
+        data["session_state"]
+        == "active"
+    )
+
+    assert (
+        data["session_active"]
+        is True
+    )
+
+
+def test_failed_reverification_keeps_session_in_reverify():
+
+    isolated_client = TestClient(app)
+
+    response = isolated_client.post(
+        "/api/login",
+        json={
+            "username": "researcher",
+            "password": "research123",
+        },
+    )
+
+    assert response.status_code == 200
+
+
+    session_id = (
+        response.cookies.get(
+            "session_id"
+        )
+    )
+
+    session = session_store.get(
+        session_id
+    )
+
+    assert session is not None
+
+
+    session_store.mark_reverify(
+        session
+    )
+
+
+    original_count = (
+        session.reverify_count
+    )
+
+
+    response = isolated_client.post(
+        "/api/session/reverify",
+        json={
+            "verified": False,
+        },
+    )
+
+
+    assert response.status_code == 200
+
+
+    data = response.json()
+
+
+    assert data["verified"] is False
+
+    assert (
+        data["session_state"]
+        == "reverify"
+    )
+
+    assert (
+        data["reverify_count"]
+        == original_count + 1
+    )
+
+
+def test_locked_session_cannot_reverify():
+
+    isolated_client = TestClient(app)
+
+    response = isolated_client.post(
+        "/api/login",
+        json={
+            "username": "researcher",
+            "password": "research123",
+        },
+    )
+
+    assert response.status_code == 200
+
+
+    session_id = (
+        response.cookies.get(
+            "session_id"
+        )
+    )
+
+    session = session_store.get(
+        session_id
+    )
+
+    assert session is not None
+
+
+    session_store.lock(
+        session,
+        reason="Test lock.",
+    )
+
+
+    response = isolated_client.post(
+        "/api/session/reverify",
+        json={
+            "verified": True,
+        },
+    )
+
+
+    assert response.status_code == 401
+
+
+def test_reverification_required_for_protected_resource():
+
+    isolated_client = TestClient(app)
+
+    response = isolated_client.post(
+        "/api/login",
+        json={
+            "username": "researcher",
+            "password": "research123",
+        },
+    )
+
+    assert response.status_code == 200
+
+
+    session_id = (
+        response.cookies.get(
+            "session_id"
+        )
+    )
+
+    session = session_store.get(
+        session_id
+    )
+
+    assert session is not None
+
+
+    session_store.mark_reverify(
+        session
+    )
+
+
+    response = isolated_client.get(
+        "/api/protected/resource"
+    )
+
+
+    assert response.status_code == 403
+
+    assert (
+        "verification"
+        in response.json()["detail"].lower()
+    )
+
+===== FILE: tests\test_session_expiration.py =====
+from datetime import datetime, timedelta, timezone
+
+from app.audit.logger import (
+    AuditLogger,
+)
+
+from app.config import (
+    SessionConfig,
+)
+
+from app.models.audit import (
+    AuditEventType,
+)
+
+from app.models.session import (
+    SessionState,
+)
+
+from app.storage.session_store import (
+    SessionStore,
+)
+
+
+def create_store(
+    timeout_seconds: int = 60,
+):
+    audit_logger = AuditLogger()
+
+    store = SessionStore(
+        audit_logger=audit_logger,
+        config=SessionConfig(
+            inactivity_timeout_seconds=(
+                timeout_seconds
+            )
+        ),
+    )
+
+    session = store.create(
+        session_id="session-1",
+        user_id="researcher",
+    )
+
+    return store, audit_logger, session
+
+
+def test_fresh_session_is_not_expired():
+
+    store, audit_logger, session = (
+        create_store()
+    )
+
+    assert not store.is_expired(
+        session
+    )
+
+    assert session.state == (
+        SessionState.ACTIVE
+    )
+
+
+def test_session_expires_after_inactivity():
+
+    store, audit_logger, session = (
+        create_store(
+            timeout_seconds=60
+        )
+    )
+
+    future = (
+        session.last_activity_at
+        + timedelta(seconds=61)
+    )
+
+    assert store.is_expired(
+        session,
+        now=future,
+    )
+
+    store.ensure_valid(
+        session
+    )
+
+    # ensure_valid uses the real current time, so
+    # explicitly expire for the deterministic lifecycle test.
+    store.expire(
+        session
+    )
+
+    assert session.state == (
+        SessionState.LOCKED
+    )
+
+    assert session.is_locked
+
+    assert session.lock_reason == (
+        "Session expired due to inactivity."
+    )
+
+
+def test_expiration_generates_audit_event():
+
+    store, audit_logger, session = (
+        create_store(
+            timeout_seconds=60
+        )
+    )
+
+    store.expire(
+        session
+    )
+
+    events = (
+        audit_logger.list_events()
+    )
+
+    expiration_events = [
+        event
+        for event in events
+        if event.event_type
+        == AuditEventType.SESSION_EXPIRED
+    ]
+
+    assert len(
+        expiration_events
+    ) == 1
+
+    assert (
+        expiration_events[0].session_id
+        == "session-1"
+    )
+
+    assert (
+        expiration_events[0].user_id
+        == "researcher"
+    )
+
+
+def test_expiration_is_terminal():
+
+    store, audit_logger, session = (
+        create_store()
+    )
+
+    store.expire(
+        session
+    )
+
+    store.activate(
+        session,
+        reason="attempted recovery",
+    )
+
+    assert session.state == (
+        SessionState.LOCKED
+    )
+
+    assert session.is_locked
+
+
+def test_locked_session_does_not_expire_again():
+
+    store, audit_logger, session = (
+        create_store()
+    )
+
+    store.expire(
+        session
+    )
+
+    first_count = (
+        audit_logger.count()
+    )
+
+    store.ensure_valid(
+        session
+    )
+
+    second_count = (
+        audit_logger.count()
+    )
+
+    assert second_count == first_count
+
+    expiration_events = [
+        event
+        for event in audit_logger.list_events()
+        if event.event_type
+        == AuditEventType.SESSION_EXPIRED
+    ]
+
+    assert len(
+        expiration_events
+    ) == 1
+
+
+def test_touch_refreshes_activity():
+
+    store, audit_logger, session = (
+        create_store(
+            timeout_seconds=60
+        )
+    )
+
+    original_timestamp = (
+        session.last_activity_at
+    )
+
+    store.touch(
+        session
+    )
+
+    assert (
+        session.last_activity_at
+        >= original_timestamp
+    )
+
+
+def test_zero_timeout_disables_expiration():
+
+    store, audit_logger, session = (
+        create_store(
+            timeout_seconds=0
+        )
+    )
+
+    future = (
+        session.last_activity_at
+        + timedelta(days=365)
+    )
+
+    assert not store.is_expired(
+        session,
+        now=future,
+    )
+
+
+def test_negative_timeout_is_rejected():
+
+    import pytest
+
+    with pytest.raises(
+        ValueError
+    ):
+
+        SessionConfig(
+            inactivity_timeout_seconds=-1
+        )
+
+===== FILE: tests\test_session_lifecycle.py =====
+from app.models.decision import (
+    DecisionAction,
+)
+
+from app.models.session import (
+    SessionState,
+)
+
+from app.storage.session_store import (
+    SessionStore,
+)
+
+
+def create_session():
+
+    store = SessionStore()
+
+    session = store.create(
+        session_id="session-1",
+        user_id="researcher",
+    )
+
+    return store, session
+
+
+def test_new_session_is_active():
+
+    store, session = (
+        create_session()
+    )
+
+    assert session.state == (
+        SessionState.ACTIVE
+    )
+
+    assert session.active
+
+    assert not session.requires_reverification
+
+    assert not session.is_locked
+
+
+def test_reverify_transition():
+
+    store, session = (
+        create_session()
+    )
+
+    store.mark_reverify(
+        session
+    )
+
+    assert session.state == (
+        SessionState.REVERIFY
+    )
+
+    assert not session.active
+
+    assert session.requires_reverification
+
+    assert session.reverify_count == 1
+
+
+def test_successful_reverification_activates():
+
+    store, session = (
+        create_session()
+    )
+
+    store.mark_reverify(
+        session
+    )
+
+    store.activate(
+        session
+    )
+
+    assert session.state == (
+        SessionState.ACTIVE
+    )
+
+    assert session.active
+
+    assert not session.requires_reverification
+
+    assert session.reverify_count == 1
+
+
+def test_failed_reverification_keeps_session_in_reverify():
+
+    store, session = (
+        create_session()
+    )
+
+    store.mark_reverify(
+        session
+    )
+
+    original_count = (
+        session.reverify_count
+    )
+
+    store.mark_reverify(
+        session
+    )
+
+    assert session.state == (
+        SessionState.REVERIFY
+    )
+
+    assert session.reverify_count == (
+        original_count + 1
+    )
+
+
+def test_lock_transition():
+
+    store, session = (
+        create_session()
+    )
+
+    store.lock(
+        session,
+        reason="test lock",
+    )
+
+    assert session.state == (
+        SessionState.LOCKED
+    )
+
+    assert session.is_locked
+
+    assert not session.active
+
+    assert session.lock_reason == (
+        "test lock"
+    )
+
+
+def test_locked_session_cannot_be_reactivated():
+
+    store, session = (
+        create_session()
+    )
+
+    store.lock(
+        session,
+        reason="test lock",
+    )
+
+    store.activate(
+        session
+    )
+
+    assert session.state == (
+        SessionState.LOCKED
+    )
+
+    assert session.is_locked
+
+
+def test_policy_actions_are_applied_by_store():
+
+    store, session = (
+        create_session()
+    )
+
+    store.apply_action(
+        session,
+        DecisionAction.REVERIFY,
+        "test",
+    )
+
+    assert session.state == (
+        SessionState.REVERIFY
+    )
+
+    store.apply_action(
+        session,
+        DecisionAction.ALLOW,
+        "test",
+    )
+
+    assert session.state == (
+        SessionState.ACTIVE
+    )
+
+    store.apply_action(
+        session,
+        DecisionAction.LOCK,
+        "test",
+    )
+
+    assert session.state == (
+        SessionState.LOCKED
+    )
+
+
+def test_locked_session_ignores_policy_actions():
+
+    store, session = (
+        create_session()
+    )
+
+    store.lock(
+        session,
+        reason="terminal lock",
+    )
+
+    store.apply_action(
+        session,
+        DecisionAction.ALLOW,
+        "attempted recovery",
+    )
+
+    assert session.state == (
+        SessionState.LOCKED
+    )
+
+    assert session.is_locked
+
+===== FILE: tests\test_temporal.py =====
+
